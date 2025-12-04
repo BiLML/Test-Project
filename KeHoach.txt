@@ -1,0 +1,41 @@
+Project-Group-4/
+├── README.md                    ← Giới thiệu dự án (bạn đang có)
+├── docs/                        ← Thư mục chứa toàn bộ tài liệu (bắt buộc)
+│   ├── 01_YeuCauHeThong.md      ← User Requirements + FRS + NFRS
+│   ├── 02_SRS.md                ← Software Requirements Specification
+│   ├── 03_ThietKeHeThong.md     ← System Analysis & Design (UML, Architecture)
+│   ├── 04_ThietKeChiTiet.md     ← Detailed Design
+│   ├── 05_TestPlan.md
+│   ├── 06_Installation_Manual.md
+│   ├── 07_User_Manual.md
+│   └── diagrams/                ← UML, ERD, Architecture diagram...
+│       ├── use-case-diagram.png
+│       ├── class-diagram.png
+│       ├── sequence-diagram-login.png
+│       └── system-architecture.png
+├── backend/                     ← API + AI Core
+│   ├── aura-ai-core/            ← Microservice AI (Python)
+│   │   ├── models/
+│   │   ├── inference.py
+│   │   ├── train.py
+│   │   └── requirements.txt
+│   ├── aura-api/                ← FastAPI / Flask
+│   │   ├── main.py
+│   │   ├── routes/
+│   │   ├── schemas/
+│   │   └── requirements.txt
+│   └── docker-compose.yml
+├── frontend/                    ← Web app React + TypeScript
+│   ├── public/
+│   ├── src/
+│   │   ├── components/
+│   │   ├── pages/
+│   │   ├── services/api.ts
+│   │   └── App.tsx
+│   └── package.json
+├── mobile/                      ← (Tùy chọn) Flutter – có thể để trống trước
+├── .github/
+│   └── workflows/
+│       └── ci-cd.yml            ← Tự động test + deploy sau này
+├── .gitignore
+└── PROJECT_PLAN.md              ← Kế hoạch chi tiết + phân công nhiệm vụ (rất quan trọng)
