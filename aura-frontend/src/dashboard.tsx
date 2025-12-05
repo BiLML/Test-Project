@@ -42,7 +42,7 @@ const Dashboard: React.FC = () => {
                     fontWeight: 'bold'
                 }}
             >
-                Đăng Xuất
+                Đăng XuấT
             </button>
         </div>
     );
