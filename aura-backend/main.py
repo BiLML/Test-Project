@@ -2,9 +2,8 @@
 import requests
 import os
 import asyncio # <--- MỚI: Để đếm giây
-import random  # <--- MỚI: Để random bệnh
+import random  # <--- MỚI: Để random bệnh(hiện tại demo do đang huấn luyện AI phân tích ảnh)
 from dotenv import load_dotenv
-
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -12,12 +11,11 @@ import bcrypt
 from jose import JWTError, jwt
 from datetime import datetime, timedelta
 # --- THÊM BackgroundTasks VÀO DÒNG DƯỚI ĐÂY ---
-from fastapi import FastAPI, HTTPException, Depends, status, File, UploadFile, BackgroundTasks
-from fastapi.security import OAuth2PasswordBearer
-import cloudinary
+from fastapi import FastAPI, HTTPException, Depends, status, File, UploadFile, BackgroundTasks #
+from fastapi.security import OAuth2PasswordBearer # <--- MỚI: Để bảo mật với OAuth2
+import cloudinary # thư viện cloudinary
 import cloudinary.uploader
 from bson.objectid import ObjectId # <--- MỚI: Để tìm ID trong MongoDB
-
 
 # 1. Load biến môi trường
 load_dotenv()
@@ -277,7 +275,7 @@ async def get_single_record(record_id: str, current_user: dict = Depends(get_cur
         print(f"Lỗi: {e}")
         raise HTTPException(status_code=400, detail="ID không hợp lệ")
     
-@app.post("/api/google-login")
+@app.post("/api/google-login") # <--- MỚI: Đăng nhập với Google
 async def google_login(data: GoogleLoginRequest):
     # Bước A: Dùng token nhận được từ Frontend để hỏi Google thông tin người dùng
     google_response = requests.get(
