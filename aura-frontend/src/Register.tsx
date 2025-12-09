@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import './App.css'; // Dùng chung style với trang Login cho đẹp
+import './App.css'; 
 
 const Register = () => {
   const navigate = useNavigate();
@@ -32,35 +32,43 @@ const Register = () => {
         body: JSON.stringify({
           userName: formData.userName,
           password: formData.password,
+          // role: "USER" // Backend đã để mặc định, không cần gửi cũng được
         }),
       });
 
       const data = await response.json();
 
       if (!response.ok) {
+        // Lỗi do Server trả về (VD: Tài khoản trùng, mật khẩu yếu...)
         setError(data.detail || "Đăng ký thất bại");
       } else {
         alert("Đăng ký thành công! Hãy đăng nhập ngay.");
-        navigate('/'); // Chuyển về trang Login
+        navigate('/login'); // Sửa thành /login cho rõ ràng hơn /
       }
     } catch (err) {
-      setError("Tài khoản đã tồn tại!");
+      // Lỗi do mất mạng hoặc Server chưa bật
+      console.error(err);
+      setError("Không thể kết nối đến Server! Vui lòng kiểm tra lại.");
     }
   };
 
   return (
     <div className="login-box">
       <div className="form-title">
+        <img src="/logo.svg" alt="AURA Logo" style={{ width: '80px', marginBottom: '10px' }} />
         <h3>Đăng Ký Tài Khoản</h3>
       </div>
       
       <form onSubmit={handleRegister}>
-        {error && <p style={{color: 'red'}}>{error}</p>}
+        {error && <p style={{color: 'red', textAlign: 'center'}}>{error}</p>}
 
         <div className="input-group">
-          <i className="fas fa-envelope icon"></i>
+          <i className="fas fa-user icon"></i> {/* Đổi icon thành User */}
           <input 
-            type="userName" name="userName" placeholder="Tên tài khoản" required 
+            type="text" // --- SỬA LẠI: type="text" mới đúng HTML ---
+            name="userName" 
+            placeholder="Tên tài khoản" 
+            required 
             onChange={handleChange}
           />
         </div>
@@ -68,15 +76,21 @@ const Register = () => {
         <div className="input-group">
           <i className="fas fa-lock icon"></i>
           <input 
-            type="password" name="password" placeholder="Mật khẩu" required 
+            type="password" 
+            name="password" 
+            placeholder="Mật khẩu" 
+            required 
             onChange={handleChange}
           />
         </div>
 
         <div className="input-group">
-          <i className="fas fa-check icon"></i>
+          <i className="fas fa-check-circle icon"></i> {/* Đổi icon check cho đẹp */}
           <input 
-            type="password" name="confirm_password" placeholder="Xác nhận mật khẩu" required 
+            type="password" 
+            name="confirm_password" 
+            placeholder="Xác nhận mật khẩu" 
+            required 
             onChange={handleChange}
           />
         </div>
@@ -85,9 +99,13 @@ const Register = () => {
 
         <div className="register-section">
             <p>Đã có tài khoản?</p>
-            <a style={{cursor: 'pointer'}} onClick={() => navigate('/')} className="register-link">
+            <span 
+                style={{cursor: 'pointer', color: 'blue', fontWeight: 'bold'}} 
+                onClick={() => navigate('/login')} 
+                className="register-link"
+            >
                 Quay lại Đăng Nhập
-            </a>
+            </span>
         </div>
       </form>
     </div>

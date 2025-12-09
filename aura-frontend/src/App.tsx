@@ -4,6 +4,8 @@ import Login from './Login';
 import Dashboard from './dashboard';
 import './App.css';
 import Register from './Register';
+import Upload from './Upload'; // <--- Import
+import Analysis from './Analysis'; // Chỉnh đường dẫn cho đúng nơi bạn lưu file
 
 // 🛡️ Component Bảo Vệ Tuyến Đường
 // Nhiệm vụ: Kiểm tra token trong localStorage. Nếu có, cho phép truy cập, nếu không, chuyển hướng về /login.
@@ -25,17 +27,17 @@ const App: React.FC = () => {
     <Router>
       <div className="app-container">
         <Routes>
-          {/* 1. Tuyến đường Đăng nhập (Công khai) */}
+          {/* 1. Các trang Công khai */}
           <Route path="/login" element={<Login />} />
-
           <Route path="/register" element={<Register />} />
           
-          {/* 2. Tuyến đường Trang Chủ (Bảo vệ) */}
-          {/* Khi truy cập /dashboard, ProtectedRoute sẽ kiểm tra trạng thái đăng nhập */}
+          {/* 2. Các trang Bảo mật (Cần đăng nhập) */}
           <Route path="/dashboard" element={<ProtectedRoute element={<Dashboard />} />} />
           
-          {/* 3. Tuyến đường Mặc định (/) */}
-          {/* Nếu người dùng truy cập / mà đã có token thì vào /dashboard, ngược lại vào /login */}
+          {/* --- ĐƯA ROUTE UPLOAD LÊN ĐÂY --- */}
+          <Route path="/upload" element={<ProtectedRoute element={<Upload />} />} />
+          
+          {/* 3. Trang mặc định */}
           <Route 
             path="/" 
             element={
@@ -45,7 +47,9 @@ const App: React.FC = () => {
             } 
           />
 
-          {/* Xử lý 404 */}
+          <Route path="/analysis/:id" element={<ProtectedRoute element={<Analysis />} />} />
+
+          {/* 4. Trang 404 (Luôn để cuối cùng) */}
           <Route path="*" element={
             <div style={{ padding: '20px', textAlign: 'center' }}>
               <h1>404</h1>

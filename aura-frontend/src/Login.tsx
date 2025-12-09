@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useGoogleLogin } from '@react-oauth/google'; // <--- 1. IMPORT HOOK
 import './App.css';
 
 const Login = () => {
@@ -10,37 +11,66 @@ const Login = () => {
   
   const navigate = useNavigate(); 
 
+  // --- 2. LOGIC ĐĂNG NHẬP GOOGLE ---
+  const loginWithGoogle = useGoogleLogin({
+    onSuccess: async (tokenResponse) => {
+        try {
+            // Gửi Token về Backend để xác thực
+            const response = await fetch('http://127.0.0.1:8000/api/google-login', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ token: tokenResponse.access_token }), 
+            });
+
+            const data = await response.json();
+
+            if (!response.ok) {
+                setError(data.detail || 'Đăng nhập Google thất bại');
+            } else {
+                // Lưu Token và thông tin user
+                localStorage.setItem('token', data.access_token);
+                localStorage.setItem('user_info', JSON.stringify(data.user_info));
+                
+                // Chuyển hướng
+                navigate('/dashboard');
+            }
+        } catch (err) {
+            setError('Không thể kết nối đến Server khi đăng nhập Google!');
+            console.error(err);
+        }
+    },
+    onError: () => setError('Đăng nhập Google thất bại (Popup closed)'),
+  });
+
+  // --- LOGIC ĐĂNG NHẬP THƯỜNG ---
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError(''); 
+    setError('');
 
     try {
-      // 1. Gửi 'userName' và 'password' sang Server Python
-      const response = await fetch('http://127.0.0.1:8000/api/login', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        // CHÚ Ý: Đổi tên trường dữ liệu gửi đi thành 'userName'
-        body: JSON.stringify({ userName, password }), 
-      });
+        const response = await fetch('http://127.0.0.1:8000/api/login', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ userName, password }),
+        });
 
-      const data = await response.json();
+        const data = await response.json();
 
-      if (!response.ok) {
-        setError(data.detail || 'Đăng nhập thất bại');
-      } else {
-        // 2. Đăng nhập thành công: Lưu token và role
-        localStorage.setItem('token', data.access_token);
-        localStorage.setItem('role', data.user_info.role);
-        
-        // 3. CHUYỂN HƯỚNG TỚI TRANG CHỦ
-        navigate('/dashboard'); 
-      }
+        if (!response.ok) {
+            setError(data.detail || 'Đăng nhập thất bại');
+        } else {
+            localStorage.setItem('token', data.access_token);
+            localStorage.setItem('user_info', JSON.stringify(data.user_info));
+            navigate('/dashboard');
+        }
 
     } catch (err) {
-      setError('Không thể kết nối đến Server Python!');
-      console.error(err);
+        setError('Không thể kết nối đến Server!');
+        console.error(err);
     }
   };
 
@@ -59,8 +89,8 @@ const Login = () => {
           <input 
             type="text" 
             placeholder="Tên người dùng" 
-            value={userName} // Sử dụng userName
-            onChange={(e) => setUserName(e.target.value)} // Cập nhật userName
+            value={userName} 
+            onChange={(e) => setUserName(e.target.value)} 
             required
           />
         </div>
@@ -77,17 +107,24 @@ const Login = () => {
         
         <button type="submit">Đăng Nhập</button>
 
-        {/* Các phần khác giữ nguyên */}
         <p className="forgot-password"><a href="#">Quên mật khẩu?</a></p>
+        
         <div className="divider">Hoặc</div>
-        <button type="button" className="social-button google-btn">
+        
+        {/* --- 3. GẮN SỰ KIỆN VÀO NÚT GOOGLE --- */}
+        <button 
+            type="button" 
+            className="social-button google-btn"
+            onClick={() => loginWithGoogle()} 
+        >
               <i className="fab fa-google"></i> Đăng nhập bằng Google
         </button>
+
         <div className="register-section">
             <p>Chưa có tài khoản?</p>
             <span
                 className="register-link"
-style={{cursor: 'pointer'}}
+                style={{cursor: 'pointer'}}
                 onClick={() => navigate('/register')}
             >
                 Đăng Ký Ngay
