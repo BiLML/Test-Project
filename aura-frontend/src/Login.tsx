@@ -32,9 +32,17 @@ const Login = () => {
                 // Lưu Token và thông tin user
                 localStorage.setItem('token', data.access_token);
                 localStorage.setItem('user_info', JSON.stringify(data.user_info));
-                
-                // Chuyển hướng
-                navigate('/dashboard');
+              
+                const userInfo = data.user_info;
+                const standardizedRole = userInfo.role ? userInfo.role.toLowerCase() : '';
+                console.log("Vai trò sau chuẩn hóa:", standardizedRole);
+                if (standardizedRole === 'doctor') { 
+                  // Nếu là Bác sĩ, chuyển hướng đến DashboardDr
+                  navigate('/dashboarddr', { replace: true });
+                } else {
+                  // Nếu là người dùng khác (bệnh nhân,...) chuyển hướng đến Dashboard chung
+                  navigate('/dashboard', { replace: true });
+                }
             }
         } catch (err) {
             setError('Không thể kết nối đến Server khi đăng nhập Google!');
@@ -65,7 +73,17 @@ const Login = () => {
         } else {
             localStorage.setItem('token', data.access_token);
             localStorage.setItem('user_info', JSON.stringify(data.user_info));
-            navigate('/dashboard');
+            const userInfo = data.user_info;
+
+          const standardizedRole = userInfo.role ? userInfo.role.toLowerCase() : '';
+          console.log("Vai trò sau chuẩn hóa:", standardizedRole);
+          if (standardizedRole === 'doctor') {
+              // Nếu là Bác sĩ, chuyển hướng đến DashboardDr
+              navigate('/dashboarddr', { replace: true });
+            } else {
+              // Nếu là người dùng khác (bệnh nhân,...) chuyển hướng đến Dashboard chung
+               navigate('/dashboard', { replace: true });
+            }
         }
 
     } catch (err) {

@@ -167,7 +167,7 @@ async def login(data: LoginRequest):
 
     token_data = {"sub": user["userName"], "role": user["role"]}
     access_token = create_access_token(token_data)
-
+    standardized_role = user.get("role", "USER").lower()
     return {
         "message": "Đăng nhập thành công",
         "access_token": access_token,
@@ -312,7 +312,7 @@ async def google_login(data: GoogleLoginRequest):
     # Bước C: Tạo Token đăng nhập của hệ thống AURA (JWT)
     token_data = {"sub": user["userName"], "role": user.get("role", "USER")}
     access_token = create_access_token(token_data)
-    
+    standardized_role = user.get("role", "USER").lower()
     return {
         "message": "Đăng nhập Google thành công",
         "access_token": access_token,
