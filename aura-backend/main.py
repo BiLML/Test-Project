@@ -1,8 +1,9 @@
 # backend/main.py
 import requests
 import os
-import asyncio # <--- MỚI: Để đếm giây
-import random  # <--- MỚI: Để random bệnh(hiện tại demo do đang huấn luyện AI phân tích ảnh)
+import asyncio
+import numpy as np # <--- MỚI: Xử lý mảng số
+import cv2         # <--- MỚI: Xử lý ảnh (OpenCV)
 from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -10,12 +11,15 @@ from motor.motor_asyncio import AsyncIOMotorClient
 import bcrypt
 from jose import JWTError, jwt
 from datetime import datetime, timedelta
-# --- THÊM BackgroundTasks VÀO DÒNG DƯỚI ĐÂY ---
-from fastapi import FastAPI, HTTPException, Depends, status, File, UploadFile, BackgroundTasks #
-from fastapi.security import OAuth2PasswordBearer # <--- MỚI: Để bảo mật với OAuth2
-import cloudinary # thư viện cloudinary
+from fastapi import FastAPI, HTTPException, Depends, status, File, UploadFile, BackgroundTasks
+from fastapi.security import OAuth2PasswordBearer
+import cloudinary
 import cloudinary.uploader
-from bson.objectid import ObjectId # <--- MỚI: Để tìm ID trong MongoDB
+from bson.objectid import ObjectId
+
+# --- THƯ VIỆN AI ---
+from tensorflow.keras.models import load_model # <--- MỚI: Để load model
+from tensorflow.keras.applications.efficientnet import preprocess_input # <--- MỚI: Chuẩn hóa ảnh
 
 # 1. Load biến môi trường
 load_dotenv()
@@ -54,36 +58,104 @@ cloudinary.config(
   secure = True
 )
 
-# --- TÁC VỤ NGẦM: GIẢ LẬP AI ---
-async def fake_ai_analysis(record_id: str):
+# --- KHỞI TẠO AI MODEL (CHẠY 1 LẦN KHI START SERVER) ---
+print("⏳ Đang tải Model AI...")
+try:
+    # Load model đã train từ file .keras
+    model = load_model("aura_retinal_model_final.keras")
+    print("✅ Đã tải Model AI thành công!")
+except Exception as e:
+    print(f"❌ LỖI TẢI MODEL: {e}")
+    model = None # Đánh dấu là chưa có model
+
+# Danh sách nhãn bệnh (Phải khớp thứ tự lúc train)
+CLASS_NAMES = {
+    0: "Bình thường (No DR)",
+    1: "Nhẹ (Mild)",
+    2: "Trung bình (Moderate)",
+    3: "Nặng (Severe)",
+    4: "Tăng sinh (Proliferative)"
+}
+
+# --- HÀM XỬ LÝ ẢNH (BEN GRAHAM) ---
+def preprocess_image_ben_graham(image_bytes):
+    # 1. Chuyển bytes thành ảnh OpenCV
+    nparr = np.frombuffer(image_bytes, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    
+    # 2. Resize về 224x224 (Kích thước model yêu cầu)
+    img = cv2.resize(img, (224, 224))
+    
+    # 3. Kỹ thuật Ben Graham (Làm rõ mạch máu)
+    # Đây là bước quan trọng để model nhận diện đúng các tổn thương nhỏ
+    img = cv2.addWeighted(img, 4, cv2.GaussianBlur(img, (0,0), 10), -4, 128)
+    
+    # 4. Chuẩn hóa theo chuẩn EfficientNet
+    img = preprocess_input(img)
+    
+    # 5. Thêm chiều batch (Model nhận đầu vào là lô ảnh: 1, 224, 224, 3)
+    img_batch = np.expand_dims(img, axis=0)
+    
+    return img_batch
+
+# --- TÁC VỤ NGẦM: AI PHÂN TÍCH THỰC TẾ ---
+async def real_ai_analysis(record_id: str, image_url: str):
     print(f"🤖 AI đang bắt đầu phân tích hồ sơ: {record_id}...")
     
-    # Đợi 4 giây (theo yêu cầu của bạn)
-    await asyncio.sleep(4) 
-    
-    # Random kết quả
-    ket_qua_mau = [
-        "Bình thường - Không phát hiện bất thường",
-        "Nguy cơ thấp - Cần theo dõi thêm",
-        "Nguy cơ cao - Võng mạc tiểu đường (DR)",
-        "Nguy cơ cao - Thoái hóa điểm vàng (AMD)",
-        "Nguy cơ trung bình - Tăng nhãn áp"
-    ]
-    ai_result = random.choice(ket_qua_mau)
-    
-    # Cập nhật vào MongoDB
-    await db.medical_records.update_one(
-        {"_id": ObjectId(record_id)},
-        {
-            "$set": {
-                "ai_analysis_status": "COMPLETED",
-                "ai_result": ai_result
-            }
-        }
-    )
-    print(f"✅ AI đã phân tích xong hồ sơ {record_id}: {ai_result}")
+    if model is None:
+        print("⚠️ Model chưa được tải. Không thể phân tích.")
+        return
 
-# --- CÁC HÀM HỖ TRỢ ---
+    try:
+        # 1. Tải ảnh từ Cloudinary về bộ nhớ RAM (không cần lưu ra file)
+        response = requests.get(image_url)
+        if response.status_code != 200:
+            raise Exception("Không thể tải ảnh từ Cloudinary")
+        
+        image_bytes = response.content
+
+        # 2. Xử lý ảnh (Preprocessing)
+        processed_image = preprocess_image_ben_graham(image_bytes)
+
+        # 3. Dự đoán (Inference)
+        predictions = model.predict(processed_image)
+        
+        # 4. Lấy kết quả
+        class_idx = np.argmax(predictions[0])       # Lấy vị trí có điểm cao nhất (ví dụ: 3)
+        confidence = float(np.max(predictions[0]))  # Lấy điểm tin cậy (ví dụ: 0.95)
+        result_text = CLASS_NAMES[class_idx]        # Lấy tên bệnh (ví dụ: Nặng)
+
+        # Logic hiển thị: Nếu độ tin cậy quá thấp (< 50%), báo cần kiểm tra lại
+        final_result = f"{result_text} - Độ tin cậy: {confidence*100:.2f}%"
+        
+        print(f"✅ Kết quả AI: {final_result}")
+
+        # 5. Cập nhật vào MongoDB
+        await db.medical_records.update_one(
+            {"_id": ObjectId(record_id)},
+            {
+                "$set": {
+                    "ai_analysis_status": "COMPLETED",
+                    "ai_result": final_result,
+                    "ai_confidence": confidence, # Lưu thêm chỉ số tin cậy để sau này dùng
+                    "ai_raw_class": int(class_idx)
+                }
+            }
+        )
+    except Exception as e:
+        print(f"❌ Lỗi khi AI phân tích: {e}")
+        # Cập nhật trạng thái lỗi vào DB để User biết
+        await db.medical_records.update_one(
+            {"_id": ObjectId(record_id)},
+            {
+                "$set": {
+                    "ai_analysis_status": "FAILED",
+                    "ai_result": "Lỗi phân tích. Vui lòng thử lại ảnh khác."
+                }
+            }
+        )
+
+# --- CÁC HÀM HỖ TRỢ (GIỮ NGUYÊN) ---
 
 def create_access_token(data: dict):
     to_encode = data.copy()
@@ -117,7 +189,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
         "id": str(user["_id"])
     }
 
-# --- MODELS ---
+# --- MODELS (GIỮ NGUYÊN) ---
 class LoginRequest(BaseModel):
     userName: str
     password: str
@@ -191,10 +263,10 @@ async def read_doctor_patients(current_user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=403, detail="Bạn không có quyền truy cập")
     return {"message": "Danh sách bệnh nhân (Chỉ bác sĩ mới thấy)"}
 
-# --- API UPLOAD ĐÃ CẬP NHẬT BACKGROUND TASKS ---
+# --- API UPLOAD (GỌI AI THẬT) ---
 @app.post("/api/upload-eye-image")
 async def upload_eye_image(
-    background_tasks: BackgroundTasks, # <--- MỚI: Nhận tác vụ ngầm
+    background_tasks: BackgroundTasks, 
     file: UploadFile = File(...), 
     current_user: dict = Depends(get_current_user)
 ):
@@ -202,11 +274,11 @@ async def upload_eye_image(
         raise HTTPException(status_code=400, detail="File không hợp lệ. Vui lòng tải ảnh.")
 
     try:
-        # Upload lên Cloudinary
+        # 1. Upload lên Cloudinary
         upload_result = cloudinary.uploader.upload(file.file, folder="aura_retina")
         image_url = upload_result.get("secure_url")
         
-        # Lưu vào DB với trạng thái Đang phân tích...
+        # 2. Lưu vào DB (Trạng thái Pending)
         record = {
             "user_id": current_user["id"],
             "userName": current_user["userName"],
@@ -219,8 +291,8 @@ async def upload_eye_image(
         new_record = await db.medical_records.insert_one(record)
         new_id = str(new_record.inserted_id)
 
-        # --- KÍCH HOẠT AI CHẠY NGẦM ---
-        background_tasks.add_task(fake_ai_analysis, new_id)
+        # 3. Gửi Task cho AI thật xử lý ngầm (Truyền ID và URL ảnh)
+        background_tasks.add_task(real_ai_analysis, new_id, image_url)
 
         return {
             "message": "Upload thành công! AI đang phân tích...",
@@ -234,7 +306,6 @@ async def upload_eye_image(
 
 @app.get("/api/medical-records")
 async def get_medical_records(current_user: dict = Depends(get_current_user)):
-    # 1. Tìm tất cả bệnh án của user hiện tại
     cursor = db.medical_records.find({"user_id": current_user["id"]}).sort("upload_date", -1)
     
     results = []
@@ -253,7 +324,6 @@ async def get_medical_records(current_user: dict = Depends(get_current_user)):
 @app.get("/api/medical-records/{record_id}")
 async def get_single_record(record_id: str, current_user: dict = Depends(get_current_user)):
     try:
-        # Tìm bản ghi theo ID và user_id (để bảo mật)
         record = await db.medical_records.find_one({
             "_id": ObjectId(record_id),
             "user_id": current_user["id"]
@@ -269,15 +339,14 @@ async def get_single_record(record_id: str, current_user: dict = Depends(get_cur
             "result": record["ai_result"],
             "status": "Hoàn thành" if record["ai_analysis_status"] == "COMPLETED" else "Đang xử lý",
             "image_url": record["image_url"],
-            "doctor_note": record.get("doctor_note", "Chưa có ghi chú từ bác sĩ.") # Dự phòng cho tương lai
+            "doctor_note": record.get("doctor_note", "Chưa có ghi chú từ bác sĩ.") 
         }
     except Exception as e:
         print(f"Lỗi: {e}")
         raise HTTPException(status_code=400, detail="ID không hợp lệ")
     
-@app.post("/api/google-login") # <--- MỚI: Đăng nhập với Google
+@app.post("/api/google-login")
 async def google_login(data: GoogleLoginRequest):
-    # Bước A: Dùng token nhận được từ Frontend để hỏi Google thông tin người dùng
     google_response = requests.get(
         f"https://www.googleapis.com/oauth2/v3/userinfo?access_token={data.token}"
     )
@@ -287,29 +356,25 @@ async def google_login(data: GoogleLoginRequest):
         
     google_user = google_response.json()
     
-    # Lấy thông tin quan trọng
     email = google_user.get('email')
     name = google_user.get('name', 'Google User')
     
     if not email:
         raise HTTPException(status_code=400, detail="Không lấy được email từ Google")
 
-    # Bước B: Kiểm tra xem user này đã có trong Database chưa
     user = await users_collection.find_one({"userName": email})
     
     if not user:
-        # Nếu chưa có -> Tự động tạo tài khoản mới
         new_user = {
             "userName": email,
-            "password": "", # Không cần mật khẩu vì dùng Google
+            "password": "", 
             "role": "USER",
             "auth_provider": "google",
             "full_name": name
         }
         await users_collection.insert_one(new_user)
-        user = new_user # Gán lại để dùng bên dưới
+        user = new_user 
             
-    # Bước C: Tạo Token đăng nhập của hệ thống AURA (JWT)
     token_data = {"sub": user["userName"], "role": user.get("role", "USER")}
     access_token = create_access_token(token_data)
     standardized_role = user.get("role", "USER").lower()

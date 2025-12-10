@@ -113,7 +113,11 @@ const Dashboard: React.FC = () => {
     const toggleNotifications = () => setShowNotifications(!showNotifications);
 
     const totalScans = historyData.length;
-    const highRiskCount = historyData.filter(item => item.result.includes('Cao')).length;
+    const highRiskCount = historyData.filter(item =>
+        item.result.includes('Nặng') ||
+        item.result.includes('Tăng Sinh') ||
+        item.result.includes('Trung Bình')
+    ).length;
 
     // Lọc ra các thông báo (ví dụ: lấy 5 kết quả mới nhất làm thông báo)
     const recentNotifications = historyData.slice(0, 5);

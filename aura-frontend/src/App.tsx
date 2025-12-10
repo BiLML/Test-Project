@@ -5,15 +5,14 @@ import Dashboard from './dashboard';
 import DashboardDr from './dashboarddr';
 import './App.css';
 import Register from './Register';
-import Upload from './Upload'; // <--- Import
-import Analysis from './Analysis'; // Chỉnh đường dẫn cho đúng nơi bạn lưu file
+import Upload from './Upload';
+import Analysis from './Analysis'; // Component hiển thị kết quả
 
 const getUserRoleFromStorage = () => {
     try {
         const userInfoString = localStorage.getItem('user_info');
         if (userInfoString) {
             const userInfo = JSON.parse(userInfoString);
-            console.log("Vai trò đọc được:", userInfo.role);
             return userInfo.role ? userInfo.role.toLowerCase() : null;
         }
     } catch (e) {
@@ -21,18 +20,13 @@ const getUserRoleFromStorage = () => {
     }
     return null;
 };
+
 // 🛡️ Component Bảo Vệ Tuyến Đường
-// Nhiệm vụ: Kiểm tra token trong localStorage. Nếu có, cho phép truy cập, nếu không, chuyển hướng về /login.
 const ProtectedRoute: React.FC<{ element: React.ReactElement }> = ({ element }) => {
-    // Kiểm tra xem token có tồn tại trong localStorage không
     const isAuthenticated = !!localStorage.getItem('token');
-    
-    // Nếu chưa đăng nhập, chuyển hướng về /login
     if (!isAuthenticated) {
         return <Navigate to="/login" replace />;
     }
-    
-    // Nếu đã đăng nhập, hiển thị component yêu cầu
     return element;
 };
 
@@ -45,30 +39,30 @@ const App: React.FC = () => {
           <Route path="/login" element={<Login />} />
           <Route path="/register" element={<Register />} />
           
-          {/* 2. Các trang Bảo mật (Cần đăng nhập) */}
+          {/* 2. Các trang Bảo mật */}
           <Route path="/dashboard" element={<ProtectedRoute element={<Dashboard />} />} />
-          {/* Route cho DashboardDr */ }
           <Route path="/dashboarddr" element={<ProtectedRoute element={<DashboardDr />} />} />
-          {/* --- ĐƯA ROUTE UPLOAD LÊN ĐÂY --- */}
           <Route path="/upload" element={<ProtectedRoute element={<Upload />} />} />
           
+          {/* --- SỬA DÒNG NÀY ĐỂ KHỚP VỚI DASHBOARD --- */}
+          {/* Dashboard gọi /result/:id nên ở đây phải khai báo là /result/:id */}
+          <Route path="/result/:id" element={<ProtectedRoute element={<Analysis />} />} />
+          
           {/* 3. Trang mặc định */}
-        <Route 
+          <Route 
             path="/" 
             element={
-              !!localStorage.getItem('token') // Nếu đã đăng nhập
+              !!localStorage.getItem('token') 
                 ? (
-                     getUserRoleFromStorage() === 'doctor' // Kiểm tra vai trò
-                      ? <Navigate to="/dashboarddr" replace /> // Nếu là BS, chuyển đến /dashboarddr
-                      : <Navigate to="/dashboard" replace /> // Nếu là người dùng khác, chuyển đến /dashboard
+                     getUserRoleFromStorage() === 'doctor' 
+                      ? <Navigate to="/dashboarddr" replace /> 
+                      : <Navigate to="/dashboard" replace />
                   )
-                  : <Navigate to="/login" replace /> // Nếu chưa đăng nhập
+                  : <Navigate to="/login" replace />
             } 
           />
 
-          <Route path="/analysis/:id" element={<ProtectedRoute element={<Analysis />} />} />
-
-          {/* 4. Trang 404 (Luôn để cuối cùng) */}
+          {/* 4. Trang 404 */}
           <Route path="*" element={
             <div style={{ padding: '20px', textAlign: 'center' }}>
               <h1>404</h1>
