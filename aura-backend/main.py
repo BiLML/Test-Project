@@ -17,10 +17,7 @@ import cloudinary
 import cloudinary.uploader
 from bson.objectid import ObjectId
 import io
-
-# --- THƯ VIỆN AI ---
-from tensorflow.keras.models import load_model 
-from tensorflow.keras.applications.efficientnet import preprocess_input 
+import tensorflow as tf
 
 # 1. Load biến môi trường
 load_dotenv()
@@ -60,152 +57,219 @@ cloudinary.config(
     secure = True
 )
 
-# --- KHỞI TẠO AI MODEL (CHẠY 1 LẦN KHI START SERVER) ---
-print("⏳ Đang tải Model AI...")
-try:
-    # Load model đã train từ file .keras
-    model = load_model("aura_retinal_model_final.keras")
-    print("✅ Đã tải Model AI thành công!")
-except Exception as e:
-    print(f"❌ LỖI TẢI MODEL: {e}")
-    model = None # Đánh dấu là chưa có model
+# ==============================================================================
+# 🧠 KHỞI TẠO HỆ THỐNG AURA AI (MULTI-MODELS)
+# ==============================================================================
 
-# Danh sách nhãn bệnh (Phải khớp thứ tự lúc train)
-CLASS_NAMES = {
-    0: "Bình thường (No DR)",
-    1: "Nhẹ (Mild)",
-    2: "Trung bình (Moderate)",
-    3: "Nặng (Severe)",
-    4: "Tăng sinh (Proliferative)"
+# Cấu hình danh sách model (Đảm bảo file .keras nằm cùng thư mục với main.py)
+MODEL_PATHS = {
+    'EX': 'unet_mega_fusion.keras',      # Xuất tiết cứng (Hard Exudates)
+    'HE': 'unet_hemorrhages.keras',      # Xuất huyết (Hemorrhages)
+    'SE': 'unet_soft_exudates.keras',    # Xuất tiết mềm (Soft Exudates)
+    'MA': 'unet_microaneurysms.keras',   # Vi phình mạch (Microaneurysms)
+    'OD': 'unet_optic_disc.keras',       # Đĩa thị (Optic Disc)
+    'Vessels': 'unet_vessels_pro.keras'  # Mạch máu Pro (Vessels)
 }
 
-# --- HÀM XỬ LÝ ẢNH (BEN GRAHAM) ---
-def preprocess_image_ben_graham(image_bytes):
-    # 1. Chuyển bytes thành ảnh OpenCV
+loaded_models = {}
+
+print("⏳ ĐANG KHỞI ĐỘNG HỆ THỐNG AURA AI...")
+for name, path in MODEL_PATHS.items():
+    if os.path.exists(path):
+        try:
+            # compile=False để tránh lỗi hàm loss tùy chỉnh khi load
+            loaded_models[name] = tf.keras.models.load_model(path, compile=False)
+            print(f"   ✅ Đã tải Module: {name}")
+        except Exception as e:
+            print(f"   ❌ Lỗi tải {name}: {e}")
+    else:
+        print(f"   ⚠️ Không tìm thấy file model: {path}")
+
+print(f"🚀 AURA SẴN SÀNG! ({len(loaded_models)}/{len(MODEL_PATHS)} modules hoạt động)")
+
+# --- HÀM XỬ LÝ ẢNH CHUYÊN SÂU ---
+
+def preprocess_for_segmentation(img_array, target_size=256):
+    """Chuẩn hóa ảnh cho các model tổn thương thông thường (EX, HE, SE, MA, OD)"""
+    img = cv2.resize(img_array, (target_size, target_size))
+    img = img / 255.0  # Chuẩn hóa về [0, 1]
+    img = np.expand_dims(img, axis=0) # Thêm chiều batch (1, 256, 256, 3)
+    return img
+
+def preprocess_for_vessels_pro(img_array):
+    """Xử lý đặc biệt cho Mạch máu (Kênh xanh + CLAHE + 512px)"""
+    # 1. Resize về 512 (Model Pro train ở 512)
+    img = cv2.resize(img_array, (512, 512))
+    
+    # 2. Lấy kênh màu Xanh lá (Green Channel)
+    green_channel = img[:, :, 1]
+    
+    # 3. Áp dụng CLAHE để tăng tương phản mạch máu
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+    enhanced_img = clahe.apply(green_channel)
+    
+    # 4. Chuẩn hóa
+    enhanced_img = enhanced_img / 255.0
+    enhanced_img = np.expand_dims(enhanced_img, axis=-1) # (512, 512, 1)
+    enhanced_img = np.expand_dims(enhanced_img, axis=0)  # (1, 512, 512, 1)
+    
+    return enhanced_img
+
+def run_aura_inference(image_bytes):
+    """Hàm cốt lõi: Chạy tất cả model và tổng hợp kết quả"""
+    
+    # 1. Đọc ảnh từ bytes
     nparr = np.frombuffer(image_bytes, np.uint8)
-    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    original_img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    original_rgb = cv2.cvtColor(original_img, cv2.COLOR_BGR2RGB)
     
-    # 2. Resize về 224x224 (Kích thước model yêu cầu)
-    img = cv2.resize(img, (224, 224))
+    # Kích thước chuẩn đầu ra để vẽ
+    OUT_SIZE = 256
     
-    # 3. Kỹ thuật Ben Graham (Làm rõ mạch máu)
-    img = cv2.addWeighted(img, 4, cv2.GaussianBlur(img, (0,0), 10), -4, 128)
+    # Preprocess inputs
+    input_standard = preprocess_for_segmentation(original_rgb, target_size=OUT_SIZE)
+    input_vessels = preprocess_for_vessels_pro(original_rgb) # Input riêng cho Vessels
     
-    # 4. Chuẩn hóa theo chuẩn EfficientNet
-    img = preprocess_input(img)
+    # Biến lưu kết quả
+    findings = {}
+    combined_mask = np.zeros((OUT_SIZE, OUT_SIZE, 3)) # RGB Mask
     
-    # 5. Thêm chiều batch (Model nhận đầu vào là lô ảnh: 1, 224, 224, 3)
-    img_batch = np.expand_dims(img, axis=0)
+    # --- CHẠY TỪNG MODEL ---
     
-    return img_batch
+    # 1. Mạch máu (Màu Xanh Lá)
+    if 'Vessels' in loaded_models:
+        pred = loaded_models['Vessels'].predict(input_vessels, verbose=0)[0]
+        pred = cv2.resize(pred, (OUT_SIZE, OUT_SIZE)) # Resize về 256 để vẽ chung
+        mask = (pred > 0.5).astype(np.float32)
+        findings['Vessels_Density'] = np.sum(mask)
+        combined_mask[:,:,1] = np.maximum(combined_mask[:,:,1], mask) 
 
-# --- HÀM VẼ CHÚ THÍCH (MÔ PHỎNG DỰA TRÊN KẾT QUẢ PHÂN LOẠI) ---
-def generate_annotated_image(image_bytes: bytes, class_name: str) -> bytes:
-    """Tạo ra ảnh có chú thích (chủ yếu là khung và text) dựa trên kết quả phân loại."""
-    # 1. Đọc ảnh gốc bằng OpenCV
-    nparr = np.frombuffer(image_bytes, np.uint8)
-    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    # 2. Đĩa thị (Màu Xanh Dương)
+    if 'OD' in loaded_models:
+        pred = loaded_models['OD'].predict(input_standard, verbose=0)[0,:,:,0]
+        mask = (pred > 0.5).astype(np.float32)
+        findings['OD_Area'] = np.sum(mask)
+        combined_mask[:,:,2] = np.maximum(combined_mask[:,:,2], mask)
 
-    if img is None:
-        raise ValueError("Không thể đọc bytes hình ảnh bằng OpenCV.")
+    # 3. Xuất huyết (HE) & Vi phình mạch (MA) -> Màu Đỏ
+    if 'HE' in loaded_models:
+        pred = loaded_models['HE'].predict(input_standard, verbose=0)[0,:,:,0]
+        mask = (pred > 0.5).astype(np.float32)
+        findings['HE_Count'] = np.sum(mask)
+        combined_mask[:,:,0] = np.maximum(combined_mask[:,:,0], mask)
 
-    # 2. Tạo một bản sao để vẽ lên
-    h, w, _ = img.shape
-    annotated_img = img.copy()
+    if 'MA' in loaded_models:
+        pred = loaded_models['MA'].predict(input_standard, verbose=0)[0,:,:,0]
+        mask = (pred > 0.2).astype(np.float32) # Ngưỡng thấp hơn cho MA
+        findings['MA_Count'] = np.sum(mask)
+        combined_mask[:,:,0] = np.maximum(combined_mask[:,:,0], mask)
 
-    # 3. MÔ PHỎNG VẼ CHÚ THÍCH
+    # 4. Xuất tiết (EX, SE) -> Màu Vàng (Đỏ + Xanh lá)
+    if 'EX' in loaded_models:
+        pred = loaded_models['EX'].predict(input_standard, verbose=0)[0,:,:,0]
+        mask = (pred > 0.5).astype(np.float32)
+        findings['EX_Count'] = np.sum(mask)
+        combined_mask[:,:,0] = np.maximum(combined_mask[:,:,0], mask)
+        combined_mask[:,:,1] = np.maximum(combined_mask[:,:,1], mask)
+
+    if 'SE' in loaded_models:
+        pred = loaded_models['SE'].predict(input_standard, verbose=0)[0,:,:,0]
+        mask = (pred > 0.3).astype(np.float32)
+        findings['SE_Count'] = np.sum(mask)
+        combined_mask[:,:,0] = np.maximum(combined_mask[:,:,0], mask)
+        combined_mask[:,:,1] = np.maximum(combined_mask[:,:,1], mask)
+
+    # --- TẠO ẢNH OVERLAY (CHỒNG LỚP) ---
+    img_resized = cv2.resize(original_rgb, (OUT_SIZE, OUT_SIZE)).astype(np.float32) / 255.0
+    # Làm mờ ảnh gốc ở chỗ có tổn thương để màu hiện rõ hơn
+    overlay = img_resized * (1 - combined_mask * 0.4) + combined_mask * 0.5
+    overlay = np.clip(overlay * 255, 0, 255).astype(np.uint8)
     
-    # Thiết lập màu sắc và text
-    text = f"Diagnosis: {class_name}"
-    color = (0, 255, 0) # Xanh lá cho bình thường
-    if "Nặng" in class_name or "Tăng sinh" in class_name:
-        color = (0, 0, 255) # Đỏ cho trường hợp nặng
-
-    # Vẽ hộp text ở góc trên bên trái
-    cv2.putText(annotated_img, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2, cv2.LINE_AA)
+    # Chuyển về BGR để lưu bằng OpenCV
+    overlay_bgr = cv2.cvtColor(overlay, cv2.COLOR_RGB2BGR)
     
-    # MÔ PHỎNG VẼ KHUNG/KHOANH VÙNG
-    if "DR" in class_name or "Nhẹ" in class_name or "Trung bình" in class_name:
-        cv2.circle(annotated_img, (w - 50, h - 50), 30, color, -1) # Vẽ chấm tròn
+    # --- LOGIC CHẨN ĐOÁN Y KHOA (RULE-BASED AI) ---
+    diagnosis_text = "Bình thường (No DR)"
+    risk_text = "Sức khỏe mắt tốt."
+    
+    he_count = findings.get('HE_Count', 0)
+    ma_count = findings.get('MA_Count', 0)
+    se_count = findings.get('SE_Count', 0)
+    ex_count = findings.get('EX_Count', 0)
+    vessels_density = findings.get('Vessels_Density', 5000)
 
-    # 4. Mã hóa ảnh đã vẽ thành bytes để upload
-    is_success, buffer = cv2.imencode(".png", annotated_img)
-    if not is_success:
-        raise Exception("Lỗi mã hóa ảnh đã vẽ thành PNG bytes.")
-        
-    return buffer.tobytes()
+    # Logic phân loại DR
+    if he_count > 500 or se_count > 100:
+        diagnosis_text = "Nặng (Severe NPDR)"
+        risk_text = "Cảnh báo: Phát hiện nhiều tổn thương nghiêm trọng. Cần khám ngay!"
+    elif he_count > 50 or ex_count > 100:
+        diagnosis_text = "Trung bình (Moderate NPDR)"
+        risk_text = "Phát hiện mỡ máu và xuất huyết rải rác."
+    elif ma_count > 10:
+        diagnosis_text = "Nhẹ (Mild NPDR)"
+        risk_text = "Phát hiện vi phình mạch giai đoạn sớm."
+    
+    # Logic Huyết áp (Dựa trên mật độ mạch máu)
+    if vessels_density < 2000: # Mạch máu quá thưa/mảnh
+        risk_text += " | ⚠️ Cảnh báo: Mạch máu hẹp (Nguy cơ Cao huyết áp)."
+
+    return overlay_bgr, diagnosis_text, risk_text
+
+# ==============================================================================
 
 # --- TÁC VỤ NGẦM: AI PHÂN TÍCH THỰC TẾ ---
 async def real_ai_analysis(record_id: str, image_url: str):
-    print(f"🤖 AI đang bắt đầu phân tích hồ sơ: {record_id}...")
+    print(f"🤖 AI AURA đang phân tích hồ sơ: {record_id}...")
     
-    if model is None:
-        print("⚠️ Model chưa được tải. Không thể phân tích.")
+    if not loaded_models:
+        print("⚠️ Không có model nào được tải. Hủy phân tích.")
         return
 
     try:
-        # 1. Tải ảnh từ Cloudinary về bộ nhớ RAM (bytes)
+        # 1. Tải ảnh từ Cloudinary
         response = requests.get(image_url)
-        if response.status_code != 200:
-            raise Exception("Không thể tải ảnh từ Cloudinary")
-        
+        if response.status_code != 200: raise Exception("Lỗi tải ảnh Cloudinary")
         image_bytes = response.content
 
-        # 2. Xử lý ảnh (Preprocessing) & Dự đoán
-        processed_image = preprocess_image_ben_graham(image_bytes)
-        predictions = model.predict(processed_image)
+        # 2. CHẠY AURA INFERENCE (CODE MỚI)
+        overlay_img, diagnosis_result, detailed_risk = run_aura_inference(image_bytes)
         
-        # 3. Lấy kết quả chẩn đoán
-        class_idx = np.argmax(predictions[0]) 
-        confidence = float(np.max(predictions[0]))
-        result_text = CLASS_NAMES[class_idx]
-
-        final_result = f"{result_text} ({confidence*100:.2f}%)"
-        
-        # --- BƯỚC MỚI: TẠO ẢNH CÓ CHÚ THÍCH (ANNOTATION) ---
-        annotated_image_bytes = generate_annotated_image(image_bytes, result_text)
-        
-        # 4. Upload ảnh có chú thích lên Cloudinary
-        annotated_file_object = io.BytesIO(annotated_image_bytes) 
+        # 3. Upload ảnh kết quả (Overlay) lên Cloudinary
+        is_success, buffer = cv2.imencode(".png", overlay_img)
+        if not is_success: raise Exception("Lỗi mã hóa ảnh kết quả.")
+        annotated_file = io.BytesIO(buffer.tobytes())
         
         upload_result = cloudinary.uploader.upload(
-            file=annotated_file_object, 
-            public_id=f"annotated_{record_id}", 
-            folder="aura_annotated",
+            file=annotated_file, 
+            public_id=f"aura_scan_{record_id}", 
+            folder="aura_results",
             resource_type="image"
         )
         annotated_url = upload_result.get("secure_url")
-        print(f"✅ Ảnh chú thích đã được lưu: {annotated_url}")
+        print(f"✅ Ảnh phân tích đã lưu: {annotated_url}")
         
-        # 5. Cập nhật vào MongoDB (LƯU KẾT QUẢ CHẨN ĐOÁN VÀ URL MỚI)
+        # 4. Cập nhật DB
         await medical_records_collection.update_one(
             {"_id": ObjectId(record_id)},
             {
                 "$set": {
                     "ai_analysis_status": "COMPLETED",
-                    "ai_result": final_result,
-                    "ai_confidence": confidence, 
-                    "ai_raw_class": int(class_idx),
+                    "ai_result": diagnosis_result, # Ví dụ: "Trung bình (Moderate)"
+                    "doctor_note": detailed_risk,  # Lưu chi tiết vào note để user đọc
                     "annotated_image_url": annotated_url
                 }
             }
         )
-        print(f"✅ Hồ sơ {record_id} đã được cập nhật hoàn tất.")
+        print(f"✅ Hồ sơ {record_id} hoàn tất.")
     
     except Exception as e:
-        print(f"❌ Lỗi khi AI phân tích: {e}")
-        # Cập nhật trạng thái lỗi vào DB
+        print(f"❌ Lỗi AI: {e}")
         await medical_records_collection.update_one(
             {"_id": ObjectId(record_id)},
-            {
-                "$set": {
-                    "ai_analysis_status": "FAILED",
-                    "ai_result": "Lỗi phân tích. Vui lòng thử lại ảnh khác."
-                }
-            }
+            {"$set": {"ai_analysis_status": "FAILED", "ai_result": "Lỗi phân tích"}}
         )
 
-# --- CÁC HÀM HỖ TRỢ ---
+# --- CÁC HÀM HỖ TRỢ & API AUTH (GIỮ NGUYÊN NHƯ CŨ) ---
 
 def create_access_token(data: dict):
     to_encode = data.copy()
@@ -229,9 +293,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
     except JWTError:
         raise credentials_exception
 
-    # Tìm user theo userName
     user = await users_collection.find_one({"userName": userName})
-    
     if user is None:
         raise credentials_exception
         
@@ -248,7 +310,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
         "weight": user.get("weight", ""),
         "gender": user.get("gender", ""),
         "nationality": user.get("nationality", ""),
-        "assigned_doctor_id": user.get("assigned_doctor_id", None) # TRẢ VỀ ID BÁC SĨ ĐÃ ĐƯỢC GÁN
+        "assigned_doctor_id": user.get("assigned_doctor_id", None)
     }
 
 # --- MODELS ---
@@ -267,7 +329,7 @@ class GoogleLoginRequest(BaseModel):
 class UserProfileUpdate(BaseModel):
     email: str = None
     phone: str = None
-    age: str = None      
+    age: str = None       
     hometown: str = None
     insurance_id: str = None
     height: str = None
@@ -340,7 +402,7 @@ async def read_users_me(current_user: dict = Depends(get_current_user)):
         "user_info": current_user
     }
 
-# --- API UPLOAD (GỌI AI THẬT) ---
+# --- API UPLOAD ---
 @app.post("/api/upload-eye-image")
 async def upload_eye_image(
     background_tasks: BackgroundTasks, 
@@ -368,7 +430,7 @@ async def upload_eye_image(
         new_record = await medical_records_collection.insert_one(record)
         new_id = str(new_record.inserted_id)
 
-        # 3. Gửi Task cho AI thật xử lý ngầm (Truyền ID và URL ảnh)
+        # 3. Gửi Task cho AI xử lý ngầm
         background_tasks.add_task(real_ai_analysis, new_id, image_url)
 
         return {
@@ -384,7 +446,6 @@ async def upload_eye_image(
 @app.get("/api/medical-records")
 async def get_medical_records(current_user: dict = Depends(get_current_user)):
     cursor = medical_records_collection.find({"user_id": current_user["id"]}).sort("upload_date", -1)
-    
     results = []
     async for document in cursor:
         results.append({
@@ -395,13 +456,11 @@ async def get_medical_records(current_user: dict = Depends(get_current_user)):
             "status": "Hoàn thành" if document["ai_analysis_status"] == "COMPLETED" else "Đang xử lý",
             "image_url": document["image_url"]
         })
-        
     return {"history": results}
 
 @app.get("/api/medical-records/{record_id}")
 async def get_single_record(record_id: str, current_user: dict = Depends(get_current_user)):
     try:
-        # Bác sĩ có thể xem bất kỳ hồ sơ nào, User chỉ xem của mình
         query = {"_id": ObjectId(record_id)}
         if current_user["role"] != "DOCTOR":
             query["user_id"] = current_user["id"]
@@ -418,20 +477,21 @@ async def get_single_record(record_id: str, current_user: dict = Depends(get_cur
             "result": record["ai_result"],
             "status": "Hoàn thành" if record["ai_analysis_status"] == "COMPLETED" else "Đang xử lý",
             "image_url": record["image_url"], # Ảnh gốc
-            "annotated_image_url": record.get("annotated_image_url"), # Ảnh chú thích
-            "doctor_note": record.get("doctor_note", "") 
+            "annotated_image_url": record.get("annotated_image_url"), # Ảnh AURA Scan
+            "doctor_note": record.get("doctor_note", "") # Chứa cả ghi chú bác sĩ và chi tiết AI
         }
     except Exception as e:
         print(f"Lỗi: {e}")
         raise HTTPException(status_code=400, detail="ID không hợp lệ")
 
-# --- API LƯU GHI CHÚ BÁC SĨ ---
+# --- CÁC API KHÁC (USER, DOCTOR, ADMIN, CHAT) GIỮ NGUYÊN ---
+# (Bạn giữ nguyên phần code API User Profile, Change Password, Assign Doctor, Chat như file cũ nhé)
+# ... [Phần code còn lại y hệt file cũ] ...
+
 @app.put("/api/medical-records/{record_id}/note")
 async def update_doctor_note(record_id: str, data: DoctorNoteRequest, current_user: dict = Depends(get_current_user)):
-    # Chỉ Doctor mới được sửa
     if current_user["role"] != "DOCTOR":
         raise HTTPException(status_code=403, detail="Chỉ Bác sĩ mới có quyền thêm ghi chú.")
-
     try:
         result = await medical_records_collection.update_one(
             {"_id": ObjectId(record_id)},
@@ -439,110 +499,65 @@ async def update_doctor_note(record_id: str, data: DoctorNoteRequest, current_us
         )
         if result.matched_count == 0:
             raise HTTPException(status_code=404, detail="Không tìm thấy hồ sơ.")
-            
         return {"message": "Đã lưu ghi chú bác sĩ."}
     except Exception as e:
-        print(f"Lỗi lưu note: {e}")
         raise HTTPException(status_code=500, detail="Lỗi server.")
 
-# --- API PHÂN CÔNG BÁC SĨ ---
 @app.post("/api/admin/assign-doctor")
 async def assign_doctor(data: AssignDoctorRequest, current_user: dict = Depends(get_current_user)):
     if current_user["role"] != "ADMIN" and current_user["role"] != "DOCTOR":
-        raise HTTPException(status_code=403, detail="Bạn không có quyền phân công bác sĩ.")
-
+        raise HTTPException(status_code=403, detail="Quyền bị từ chối.")
     try:
         doctor = await users_collection.find_one({"_id": ObjectId(data.doctor_id), "role": "DOCTOR"})
-        if not doctor:
-            raise HTTPException(status_code=404, detail="ID bác sĩ không tồn tại.")
+        if not doctor: raise HTTPException(status_code=404, detail="ID bác sĩ không tồn tại.")
         
         result = await users_collection.update_one(
             {"_id": ObjectId(data.patient_id)},
             {"$set": {"assigned_doctor_id": data.doctor_id}}
         )
-
-        if result.modified_count == 0:
-            raise HTTPException(status_code=404, detail="Không tìm thấy bệnh nhân.")
-
+        if result.modified_count == 0: raise HTTPException(status_code=404, detail="Không tìm thấy bệnh nhân.")
         return {"message": "Phân công bác sĩ thành công.", "doctor_name": doctor["userName"]}
+    except HTTPException as http_err: raise http_err
+    except Exception as e: raise HTTPException(status_code=400, detail="Lỗi server.")
 
-    except HTTPException as http_err:
-        raise http_err
-    except Exception as e:
-        print(f"Lỗi phân công: {e}")
-        raise HTTPException(status_code=400, detail="Lỗi server.")
-
-# --- API GOOGLE LOGIN ---
 @app.post("/api/google-login")
 async def google_login(data: GoogleLoginRequest):
     google_response = requests.get(f"https://www.googleapis.com/oauth2/v3/userinfo?access_token={data.token}")
     if google_response.status_code != 200:
         raise HTTPException(status_code=400, detail="Token Google không hợp lệ")
-        
     google_user = google_response.json()
     email = google_user.get('email')
     name = google_user.get('name', 'Google User')
-    
-    if not email:
-        raise HTTPException(status_code=400, detail="Không lấy được email")
+    if not email: raise HTTPException(status_code=400, detail="Không lấy được email")
 
     user = await users_collection.find_one({"email": email})
     is_new_user = False
-    
     if not user:
         new_user = {
-            "userName": email, 
-            "email": email,
-            "password": "", 
-            "role": "USER",
-            "auth_provider": "google",
-            "full_name": name,
-            "created_at": datetime.utcnow()
+            "userName": email, "email": email, "password": "", "role": "USER",
+            "auth_provider": "google", "full_name": name, "created_at": datetime.utcnow()
         }
         result = await users_collection.insert_one(new_user)
-        user = new_user 
-        user["_id"] = result.inserted_id
-        is_new_user = True
+        user = new_user; user["_id"] = result.inserted_id; is_new_user = True
     else:
-        if user.get("userName") == email:
-            is_new_user = True
+        if user.get("userName") == email: is_new_user = True
             
     token_data = {"sub": user["userName"], "role": user.get("role", "USER")}
     access_token = create_access_token(token_data)
-    
-    return {
-        "message": "Đăng nhập Google thành công",
-        "access_token": access_token,
-        "token_type": "bearer",
-        "user_info": {
-            "userName": user["userName"],
-            "role": user.get("role", "USER"),
-            "email": user.get("email")
-        },
-        "is_new_user": is_new_user
-    }
+    return {"message": "Đăng nhập Google thành công", "access_token": access_token, "token_type": "bearer", "user_info": {"userName": user["userName"], "role": user.get("role", "USER"), "email": user.get("email")}, "is_new_user": is_new_user}
 
-# --- API ĐỔI TÊN ---
 @app.put("/api/users/set-username")
 async def set_username(data: UpdateUsernameRequest, current_user: dict = Depends(get_current_user)):
     user_id = current_user["id"]
     new_username = data.new_username.strip()
-    
-    if len(new_username) < 3:
-        raise HTTPException(status_code=400, detail="Tên quá ngắn")
-    
+    if len(new_username) < 3: raise HTTPException(status_code=400, detail="Tên quá ngắn")
     existing_user = await users_collection.find_one({"userName": new_username})
-    if existing_user:
-        raise HTTPException(status_code=400, detail="Tên đã tồn tại")
-
+    if existing_user: raise HTTPException(status_code=400, detail="Tên đã tồn tại")
     await users_collection.update_one({"_id": ObjectId(user_id)}, {"$set": {"userName": new_username}})
-    
     new_token_data = {"sub": new_username, "role": current_user["role"]}
     new_access_token = create_access_token(new_token_data)
-
     return {"message": "Cập nhật thành công", "new_access_token": new_access_token, "new_username": new_username}
 
-# --- API PROFILE ---
 @app.put("/api/users/profile")
 async def update_user_profile(data: UserProfileUpdate, current_user: dict = Depends(get_current_user)):
     try:
@@ -553,113 +568,51 @@ async def update_user_profile(data: UserProfileUpdate, current_user: dict = Depe
         if data.phone:
             existing = await users_collection.find_one({"phone": data.phone, "_id": {"$ne": ObjectId(user_id)}})
             if existing: raise HTTPException(status_code=400, detail="SĐT đã dùng")
-
         update_data = {k: v for k, v in data.dict().items() if v is not None}
-        
         await users_collection.update_one({"_id": ObjectId(user_id)}, {"$set": update_data})
         return {"message": "Cập nhật hồ sơ thành công", "data": update_data}
     except HTTPException as e: raise e
-    except Exception as e:
-        print(f"Lỗi update profile: {e}")
-        raise HTTPException(status_code=500, detail="Lỗi server")
+    except Exception as e: raise HTTPException(status_code=500, detail="Lỗi server")
 
-# --- API DOCTOR: MY PATIENTS ---
 @app.get("/api/doctor/my-patients")
 async def get_doctor_assigned_patients(current_user: dict = Depends(get_current_user)):
-    if current_user["role"] != "DOCTOR":
-        raise HTTPException(status_code=403, detail="Quyền bị từ chối.")
-
+    if current_user["role"] != "DOCTOR": raise HTTPException(status_code=403, detail="Quyền bị từ chối.")
     doctor_id = current_user["id"]
     patient_cursor = users_collection.find({"assigned_doctor_id": doctor_id}).sort("userName", 1)
-    
     patients_list = []
     async for patient in patient_cursor:
         patient_id = str(patient["_id"])
         latest_record = await medical_records_collection.find_one({"user_id": patient_id}, sort=[("upload_date", -1)])
-        
         patients_list.append({
-            "id": patient_id,
-            "userName": patient["userName"],
-            "email": patient.get("email", "N/A"),
-            "phone": patient.get("phone", "N/A"),
-            "status": patient.get("status", "ACTIVE"),
-            "latest_scan": {
-                "record_id": str(latest_record["_id"]) if latest_record else None,
-                "date": latest_record["upload_date"].strftime("%d/%m/%Y") if latest_record else "Chưa có",
-                "result": latest_record["ai_result"] if latest_record else "Chưa có dữ liệu",
-                "ai_status": latest_record["ai_analysis_status"] if latest_record else "NA"
-            }
+            "id": patient_id, "userName": patient["userName"], "email": patient.get("email", "N/A"), "phone": patient.get("phone", "N/A"), "status": patient.get("status", "ACTIVE"),
+            "latest_scan": {"record_id": str(latest_record["_id"]) if latest_record else None, "date": latest_record["upload_date"].strftime("%d/%m/%Y") if latest_record else "Chưa có", "result": latest_record["ai_result"] if latest_record else "Chưa có dữ liệu", "ai_status": latest_record["ai_analysis_status"] if latest_record else "NA"}
         })
-        
     return {"patients": patients_list}
 
-# --- API ADMIN: ALL USERS ---
 @app.get("/api/admin/users")
 async def get_all_users(current_user: dict = Depends(get_current_user)):
-    if current_user["role"] != "ADMIN":
-        raise HTTPException(status_code=403, detail="Quyền bị từ chối.")
-    
+    if current_user["role"] != "ADMIN": raise HTTPException(status_code=403, detail="Quyền bị từ chối.")
     user_cursor = users_collection.find() 
     users_list = []
-    
     async for user in user_cursor:
-        users_list.append({
-            "id": str(user["_id"]),
-            "userName": user["userName"],
-            "email": user.get("email", ""),
-            "role": user.get("role", "USER"),
-            "status": user.get("status", "ACTIVE"),
-            "assigned_doctor_id": user.get("assigned_doctor_id", None)
-        })
-        
+        users_list.append({"id": str(user["_id"]), "userName": user["userName"], "email": user.get("email", ""), "role": user.get("role", "USER"), "status": user.get("status", "ACTIVE"), "assigned_doctor_id": user.get("assigned_doctor_id", None)})
     return {"users": users_list}
 
-# --- API CHATS (ĐÃ SỬA: QUERY DB THẬT) ---
 @app.get("/api/chats")
 async def get_chats(current_user: dict = Depends(get_current_user)):
     user_id = current_user["id"]
     user_role = current_user["role"]
     chats = []
-
-    # CASE 1: BÁC SĨ (Tìm bệnh nhân được gán cho mình)
     if user_role == "DOCTOR":
         patients_cursor = users_collection.find({"assigned_doctor_id": user_id})
         async for patient in patients_cursor:
-            chats.append({
-                "id": str(patient["_id"]),
-                "sender": patient["userName"],
-                "preview": "Bác sĩ ơi, tôi đã có kết quả chụp mới...",
-                "time": "Vừa xong",
-                "unread": True,
-                "interlocutor_id": str(patient["_id"])
-            })
-
-    # CASE 2: BỆNH NHÂN (Tìm bác sĩ phụ trách mình)
+            chats.append({"id": str(patient["_id"]), "sender": patient["userName"], "preview": "Bác sĩ ơi, tôi đã có kết quả chụp mới...", "time": "Vừa xong", "unread": True, "interlocutor_id": str(patient["_id"])})
     elif user_role == "USER":
         assigned_doc_id = current_user.get("assigned_doctor_id")
         if assigned_doc_id:
             try:
                 doctor = await users_collection.find_one({"_id": ObjectId(assigned_doc_id)})
-                if doctor:
-                    chats.append({
-                        "id": str(doctor["_id"]),
-                        "sender": f"BS. {doctor['userName']}",
-                        "preview": "Chào bạn, hãy thường xuyên cập nhật tình trạng nhé.",
-                        "time": "Hôm nay",
-                        "unread": True,
-                        "interlocutor_id": str(doctor["_id"])
-                    })
-            except:
-                pass
-        
-        # Tin nhắn hệ thống mặc định
-        chats.append({
-            "id": "system_01",
-            "sender": "Hệ thống AURA",
-            "preview": "Chào mừng bạn! Hãy chụp ảnh đáy mắt để bắt đầu.",
-            "time": "Hôm qua",
-            "unread": False,
-            "interlocutor_id": "system"
-        })
-
+                if doctor: chats.append({"id": str(doctor["_id"]), "sender": f"BS. {doctor['userName']}", "preview": "Chào bạn, hãy thường xuyên cập nhật tình trạng nhé.", "time": "Hôm nay", "unread": True, "interlocutor_id": str(doctor["_id"])})
+            except: pass
+        chats.append({"id": "system_01", "sender": "Hệ thống AURA", "preview": "Chào mừng bạn! Hãy chụp ảnh đáy mắt để bắt đầu.", "time": "Hôm qua", "unread": False, "interlocutor_id": "system"})
     return {"chats": chats}
