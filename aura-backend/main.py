@@ -18,6 +18,8 @@ import cloudinary.uploader
 from bson.objectid import ObjectId
 import io
 import tensorflow as tf
+# Import để xử lý ảnh cho model cũ (nếu dùng EfficientNet)
+from tensorflow.keras.applications.efficientnet import preprocess_input
 
 # 1. Load biến môi trường
 load_dotenv()
@@ -58,22 +60,26 @@ cloudinary.config(
 )
 
 # ==============================================================================
-# 🧠 KHỞI TẠO HỆ THỐNG AURA AI (MULTI-MODELS)
+# 🧠 KHỞI TẠO HỆ THỐNG AURA AI (HYBRID ENSEMBLE: SEGMENTATION + CLASSIFICATION)
 # ==============================================================================
 
-# Cấu hình danh sách model (Đảm bảo file .keras nằm cùng thư mục với main.py)
+# Cấu hình danh sách model
 MODEL_PATHS = {
-    'EX': 'unet_mega_fusion.keras',      # Xuất tiết cứng (Hard Exudates)
-    'HE': 'unet_hemorrhages.keras',      # Xuất huyết (Hemorrhages)
-    'SE': 'unet_soft_exudates.keras',    # Xuất tiết mềm (Soft Exudates)
-    'MA': 'unet_microaneurysms.keras',   # Vi phình mạch (Microaneurysms)
-    'OD': 'unet_optic_disc.keras',       # Đĩa thị (Optic Disc)
-    'Vessels': 'unet_vessels_pro.keras'  # Mạch máu Pro (Vessels)
+    # --- ĐỘI QUÂN MỚI (Segmentation - Chuyên gia chi tiết) ---
+    'EX': 'unet_mega_fusion.keras',      # Xuất tiết cứng
+    'HE': 'unet_hemorrhages.keras',      # Xuất huyết
+    'SE': 'unet_soft_exudates.keras',    # Xuất tiết mềm
+    'MA': 'unet_microaneurysms.keras',   # Vi phình mạch
+    'OD': 'unet_optic_disc.keras',       # Đĩa thị
+    'Vessels': 'unet_vessels_pro.keras', # Mạch máu Pro
+    
+    # --- LÃO TƯỚNG (Classification - Chuyên gia tổng quan) ---
+    'CLASSIFIER': 'aura_retinal_model_final.keras' 
 }
 
 loaded_models = {}
 
-print("⏳ ĐANG KHỞI ĐỘNG HỆ THỐNG AURA AI...")
+print("⏳ ĐANG KHỞI ĐỘNG HỆ THỐNG AURA AI (CHẾ ĐỘ LAI)...")
 for name, path in MODEL_PATHS.items():
     if os.path.exists(path):
         try:
@@ -87,133 +93,207 @@ for name, path in MODEL_PATHS.items():
 
 print(f"🚀 AURA SẴN SÀNG! ({len(loaded_models)}/{len(MODEL_PATHS)} modules hoạt động)")
 
-# --- HÀM XỬ LÝ ẢNH CHUYÊN SÂU ---
+# --- CÁC HÀM XỬ LÝ ẢNH ---
 
 def preprocess_for_segmentation(img_array, target_size=256):
-    """Chuẩn hóa ảnh cho các model tổn thương thông thường (EX, HE, SE, MA, OD)"""
+    """Chuẩn hóa ảnh cho các model tổn thương (EX, HE, SE, MA, OD)"""
     img = cv2.resize(img_array, (target_size, target_size))
     img = img / 255.0  # Chuẩn hóa về [0, 1]
-    img = np.expand_dims(img, axis=0) # Thêm chiều batch (1, 256, 256, 3)
+    img = np.expand_dims(img, axis=0) # Thêm chiều batch
     return img
 
 def preprocess_for_vessels_pro(img_array):
     """Xử lý đặc biệt cho Mạch máu (Kênh xanh + CLAHE + 512px)"""
-    # 1. Resize về 512 (Model Pro train ở 512)
     img = cv2.resize(img_array, (512, 512))
-    
-    # 2. Lấy kênh màu Xanh lá (Green Channel)
     green_channel = img[:, :, 1]
-    
-    # 3. Áp dụng CLAHE để tăng tương phản mạch máu
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
     enhanced_img = clahe.apply(green_channel)
-    
-    # 4. Chuẩn hóa
     enhanced_img = enhanced_img / 255.0
-    enhanced_img = np.expand_dims(enhanced_img, axis=-1) # (512, 512, 1)
-    enhanced_img = np.expand_dims(enhanced_img, axis=0)  # (1, 512, 512, 1)
-    
+    enhanced_img = np.expand_dims(enhanced_img, axis=-1)
+    enhanced_img = np.expand_dims(enhanced_img, axis=0)
     return enhanced_img
 
-def run_aura_inference(image_bytes):
-    """Hàm cốt lõi: Chạy tất cả model và tổng hợp kết quả"""
+def preprocess_for_classifier(img_array):
+    """Xử lý cho model phân loại cũ (Ben Graham + 224px)"""
+    img = cv2.resize(img_array, (224, 224))
+    img = cv2.addWeighted(img, 4, cv2.GaussianBlur(img, (0,0), 10), -4, 128)
+    img = preprocess_input(img) # Chuẩn của EfficientNet
+    img = np.expand_dims(img, axis=0)
+    return img
+
+# --- HÀM LỌC NHIỄU (MỚI) ---
+def clean_mask(mask_array, min_size=20):
+    """
+    Loại bỏ các đốm trắng nhỏ hơn min_size pixel (coi là nhiễu).
+    Giữ lại các cụm lớn (tổn thương thật).
+    """
+    # Mask đầu vào là float [0,1], cần chuyển về uint8 [0,255]
+    mask_uint8 = (mask_array * 255).astype(np.uint8)
     
-    # 1. Đọc ảnh từ bytes
+    # Tìm các vùng liên thông (Connected Components)
+    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(mask_uint8, connectivity=8)
+    
+    # Tạo mask sạch
+    cleaned_mask = np.zeros_like(mask_uint8)
+    
+    # Duyệt qua các vùng (bỏ qua label 0 là nền đen)
+    for i in range(1, num_labels):
+        area = stats[i, cv2.CC_STAT_AREA]
+        if area >= min_size: # Chỉ giữ lại đốm lớn hơn ngưỡng
+            cleaned_mask[labels == i] = 255
+            
+    # Trả về dạng float [0,1] như cũ
+    return cleaned_mask.astype(np.float32) / 255.0
+
+# --- HÀM INFERENCE V2 (ĐÃ UPDATE LOGIC CHỐNG NHIỄU) ---
+def run_aura_inference(image_bytes):
+    # 1. Đọc ảnh
     nparr = np.frombuffer(image_bytes, np.uint8)
     original_img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     original_rgb = cv2.cvtColor(original_img, cv2.COLOR_BGR2RGB)
     
-    # Kích thước chuẩn đầu ra để vẽ
     OUT_SIZE = 256
     
-    # Preprocess inputs
+    # Preprocess
     input_standard = preprocess_for_segmentation(original_rgb, target_size=OUT_SIZE)
-    input_vessels = preprocess_for_vessels_pro(original_rgb) # Input riêng cho Vessels
+    input_vessels = preprocess_for_vessels_pro(original_rgb)
+    input_classifier = preprocess_for_classifier(original_rgb)
     
-    # Biến lưu kết quả
     findings = {}
-    combined_mask = np.zeros((OUT_SIZE, OUT_SIZE, 3)) # RGB Mask
+    combined_mask = np.zeros((OUT_SIZE, OUT_SIZE, 3))
     
-    # --- CHẠY TỪNG MODEL ---
+    # --- PHẦN 1: CHẠY SEGMENTATION & LỌC NHIỄU ---
     
-    # 1. Mạch máu (Màu Xanh Lá)
+    # 1. Mạch máu
     if 'Vessels' in loaded_models:
         pred = loaded_models['Vessels'].predict(input_vessels, verbose=0)[0]
-        pred = cv2.resize(pred, (OUT_SIZE, OUT_SIZE)) # Resize về 256 để vẽ chung
-        mask = (pred > 0.5).astype(np.float32)
+        pred = cv2.resize(pred, (OUT_SIZE, OUT_SIZE))
+        mask = (pred > 0.5).astype(np.float32) # Không lọc nhiễu mạch máu vì nó vốn mảnh
         findings['Vessels_Density'] = np.sum(mask)
         combined_mask[:,:,1] = np.maximum(combined_mask[:,:,1], mask) 
 
-    # 2. Đĩa thị (Màu Xanh Dương)
+    # 2. Đĩa thị
     if 'OD' in loaded_models:
         pred = loaded_models['OD'].predict(input_standard, verbose=0)[0,:,:,0]
         mask = (pred > 0.5).astype(np.float32)
         findings['OD_Area'] = np.sum(mask)
         combined_mask[:,:,2] = np.maximum(combined_mask[:,:,2], mask)
 
-    # 3. Xuất huyết (HE) & Vi phình mạch (MA) -> Màu Đỏ
+    # 3. Tổn thương Đỏ (HE, MA) - CẦN LỌC NHIỄU KỸ
     if 'HE' in loaded_models:
         pred = loaded_models['HE'].predict(input_standard, verbose=0)[0,:,:,0]
-        mask = (pred > 0.5).astype(np.float32)
+        raw_mask = (pred > 0.5).astype(np.float32)
+        mask = clean_mask(raw_mask, min_size=15) # Lọc đốm < 15px
         findings['HE_Count'] = np.sum(mask)
         combined_mask[:,:,0] = np.maximum(combined_mask[:,:,0], mask)
 
     if 'MA' in loaded_models:
         pred = loaded_models['MA'].predict(input_standard, verbose=0)[0,:,:,0]
-        mask = (pred > 0.2).astype(np.float32) # Ngưỡng thấp hơn cho MA
+        # MA rất nhỏ, nên ngưỡng mask thấp (0.2) nhưng lọc size phải khéo
+        raw_mask = (pred > 0.2).astype(np.float32)
+        mask = clean_mask(raw_mask, min_size=5) # Giữ đốm nhỏ nhưng phải rõ nét
         findings['MA_Count'] = np.sum(mask)
         combined_mask[:,:,0] = np.maximum(combined_mask[:,:,0], mask)
 
-    # 4. Xuất tiết (EX, SE) -> Màu Vàng (Đỏ + Xanh lá)
+    # 4. Tổn thương Vàng (EX, SE)
     if 'EX' in loaded_models:
         pred = loaded_models['EX'].predict(input_standard, verbose=0)[0,:,:,0]
-        mask = (pred > 0.5).astype(np.float32)
+        raw_mask = (pred > 0.5).astype(np.float32)
+        mask = clean_mask(raw_mask, min_size=20)
         findings['EX_Count'] = np.sum(mask)
         combined_mask[:,:,0] = np.maximum(combined_mask[:,:,0], mask)
         combined_mask[:,:,1] = np.maximum(combined_mask[:,:,1], mask)
 
     if 'SE' in loaded_models:
         pred = loaded_models['SE'].predict(input_standard, verbose=0)[0,:,:,0]
-        mask = (pred > 0.3).astype(np.float32)
+        raw_mask = (pred > 0.3).astype(np.float32)
+        mask = clean_mask(raw_mask, min_size=20)
         findings['SE_Count'] = np.sum(mask)
         combined_mask[:,:,0] = np.maximum(combined_mask[:,:,0], mask)
         combined_mask[:,:,1] = np.maximum(combined_mask[:,:,1], mask)
 
-    # --- TẠO ẢNH OVERLAY (CHỒNG LỚP) ---
-    img_resized = cv2.resize(original_rgb, (OUT_SIZE, OUT_SIZE)).astype(np.float32) / 255.0
-    # Làm mờ ảnh gốc ở chỗ có tổn thương để màu hiện rõ hơn
-    overlay = img_resized * (1 - combined_mask * 0.4) + combined_mask * 0.5
-    overlay = np.clip(overlay * 255, 0, 255).astype(np.uint8)
+    # --- PHẦN 2: CHẠY CLASSIFICATION ---
+    classifier_result = "Không xác định"
+    classifier_confidence = 0.0
     
-    # Chuyển về BGR để lưu bằng OpenCV
-    overlay_bgr = cv2.cvtColor(overlay, cv2.COLOR_RGB2BGR)
-    
-    # --- LOGIC CHẨN ĐOÁN Y KHOA (RULE-BASED AI) ---
-    diagnosis_text = "Bình thường (No DR)"
-    risk_text = "Sức khỏe mắt tốt."
+    if 'CLASSIFIER' in loaded_models:
+        preds = loaded_models['CLASSIFIER'].predict(input_classifier, verbose=0)
+        class_idx = np.argmax(preds[0])
+        classifier_confidence = float(np.max(preds[0]))
+        CLASS_MAP = {0: "Bình thường (No DR)", 1: "Nhẹ (Mild)", 2: "Trung bình (Moderate)", 3: "Nặng (Severe)", 4: "Tăng sinh (Proliferative)"}
+        classifier_result = CLASS_MAP.get(class_idx, "Không xác định")
+
+    # --- PHẦN 3: LOGIC HỘI CHẨN THÔNG MINH (SMART ENSEMBLE) ---
     
     he_count = findings.get('HE_Count', 0)
     ma_count = findings.get('MA_Count', 0)
     se_count = findings.get('SE_Count', 0)
     ex_count = findings.get('EX_Count', 0)
     vessels_density = findings.get('Vessels_Density', 5000)
+    od_area = findings.get('OD_Area', 0)
 
-    # Logic phân loại DR
-    if he_count > 500 or se_count > 100:
-        diagnosis_text = "Nặng (Severe NPDR)"
-        risk_text = "Cảnh báo: Phát hiện nhiều tổn thương nghiêm trọng. Cần khám ngay!"
-    elif he_count > 50 or ex_count > 100:
-        diagnosis_text = "Trung bình (Moderate NPDR)"
-        risk_text = "Phát hiện mỡ máu và xuất huyết rải rác."
-    elif ma_count > 10:
-        diagnosis_text = "Nhẹ (Mild NPDR)"
-        risk_text = "Phát hiện vi phình mạch giai đoạn sớm."
+    # Logic đếm số lượng (Đã nâng ngưỡng an toàn)
+    seg_diagnosis = "Bình thường (No DR)"
+    dr_score = 0
+
+    if he_count > 800 or se_count > 200: 
+        seg_diagnosis = "Nặng (Severe NPDR)"; dr_score = 3
+    elif he_count > 80 or ex_count > 150: 
+        seg_diagnosis = "Trung bình (Moderate NPDR)"; dr_score = 2
+    elif ma_count > 20 or he_count > 20: 
+        seg_diagnosis = "Nhẹ (Mild NPDR)"; dr_score = 1
     
-    # Logic Huyết áp (Dựa trên mật độ mạch máu)
-    if vessels_density < 2000: # Mạch máu quá thưa/mảnh
-        risk_text += " | ⚠️ Cảnh báo: Mạch máu hẹp (Nguy cơ Cao huyết áp)."
+    # --- LOGIC QUYẾT ĐỊNH CUỐI CÙNG (QUAN TRỌNG) ---
+    final_diagnosis = seg_diagnosis
+    warning_note = ""
+    
+    # 1. Nếu Model cũ cực kỳ tự tin là BÌNH THƯỜNG (>85%)
+    if "Bình thường" in classifier_result and classifier_confidence > 0.85:
+        # Mà Model mới chỉ thấy "Nhẹ" (do nhiễu hoặc quá nhạy)
+        if seg_diagnosis == "Nhẹ (Mild NPDR)":
+            # => ÉP VỀ BÌNH THƯỜNG (Coi là nhiễu dương tính giả)
+            final_diagnosis = "Bình thường (No DR)"
+            dr_score = 0
+            warning_note = "\n✅ Đã lọc nhiễu: Các vi tổn thương phát hiện được đánh giá là không đáng kể."
+    
+    # 2. Ngược lại, nếu Model cũ thấy "Nặng" mà Segmentation không thấy gì
+    elif "Nặng" in classifier_result and seg_diagnosis == "Bình thường (No DR)":
+        final_diagnosis = f"Nghi ngờ {classifier_result}"
+        warning_note = "\n⚠️ CẢNH BÁO: AI tổng quan thấy dấu hiệu bệnh nặng dù tổn thương chưa rõ ràng trên bản đồ."
+        dr_score = 3
 
-    return overlay_bgr, diagnosis_text, risk_text
+    # --- TỔNG HỢP BÁO CÁO Y KHOA ---
+    risk_report = []
+    
+    # A. TIỂU ĐƯỜNG
+    if dr_score >= 1:
+        risk_report.append(f"🩸 TIỂU ĐƯỜNG: Phát hiện biến chứng ({final_diagnosis}).")
+        if dr_score >= 3: risk_report.append("   ➜ CẢNH BÁO: Kiểm soát đường huyết kém. Nguy cơ biến chứng thận/thần kinh.")
+        elif dr_score == 2: risk_report.append("   ➜ Bệnh đang tiến triển. Cần điều chỉnh lối sống.")
+        else: risk_report.append("   ➜ Giai đoạn đầu. Theo dõi định kỳ.")
+    else:
+        risk_report.append("🩸 TIỂU ĐƯỜNG: Võng mạc khỏe mạnh (Chưa phát hiện bệnh lý).")
+
+    # B. TIM MẠCH
+    risk_report.append("\n❤️ TIM MẠCH & HUYẾT ÁP:")
+    if vessels_density < 2000: risk_report.append("⚠️ CẢNH BÁO: Mạch máu thưa/hẹp. Nguy cơ Cao huyết áp.")
+    elif vessels_density > 15000: risk_report.append("⚠️ CẢNH BÁO: Mạch máu giãn bất thường.")
+    else: risk_report.append("✅ Hệ thống mạch máu ổn định.")
+
+    # C. GLOCOM
+    if od_area > 4500: risk_report.append("\n👁️ GLOCOM: ⚠️ Kích thước đĩa thị lớn, nghi ngờ lõm gai.")
+
+    # Tạo ảnh Overlay
+    img_resized = cv2.resize(original_rgb, (OUT_SIZE, OUT_SIZE)).astype(np.float32) / 255.0
+    overlay = img_resized * (1 - combined_mask * 0.4) + combined_mask * 0.5
+    overlay = np.clip(overlay * 255, 0, 255).astype(np.uint8)
+    overlay_bgr = cv2.cvtColor(overlay, cv2.COLOR_RGB2BGR)
+    
+    diagnosis_text = final_diagnosis
+    detailed_risk_text = "\n".join(risk_report) + warning_note
+    detailed_risk_text += f"\n\n--- THÔNG SỐ KỸ THUẬT ---\n• HE: {int(he_count)} | MA: {int(ma_count)} | EX+SE: {int(ex_count+se_count)}"
+
+    return overlay_bgr, diagnosis_text, detailed_risk_text
 
 # ==============================================================================
 
@@ -231,7 +311,7 @@ async def real_ai_analysis(record_id: str, image_url: str):
         if response.status_code != 200: raise Exception("Lỗi tải ảnh Cloudinary")
         image_bytes = response.content
 
-        # 2. CHẠY AURA INFERENCE (CODE MỚI)
+        # 2. CHẠY AURA INFERENCE (HYBRID MODE)
         overlay_img, diagnosis_result, detailed_risk = run_aura_inference(image_bytes)
         
         # 3. Upload ảnh kết quả (Overlay) lên Cloudinary
@@ -254,8 +334,8 @@ async def real_ai_analysis(record_id: str, image_url: str):
             {
                 "$set": {
                     "ai_analysis_status": "COMPLETED",
-                    "ai_result": diagnosis_result, # Ví dụ: "Trung bình (Moderate)"
-                    "doctor_note": detailed_risk,  # Lưu chi tiết vào note để user đọc
+                    "ai_result": diagnosis_result,
+                    "doctor_note": detailed_risk,
                     "annotated_image_url": annotated_url
                 }
             }
@@ -269,7 +349,7 @@ async def real_ai_analysis(record_id: str, image_url: str):
             {"$set": {"ai_analysis_status": "FAILED", "ai_result": "Lỗi phân tích"}}
         )
 
-# --- CÁC HÀM HỖ TRỢ & API AUTH (GIỮ NGUYÊN NHƯ CŨ) ---
+# --- CÁC HÀM HỖ TRỢ & API AUTH (GIỮ NGUYÊN) ---
 
 def create_access_token(data: dict):
     to_encode = data.copy()
@@ -483,10 +563,6 @@ async def get_single_record(record_id: str, current_user: dict = Depends(get_cur
     except Exception as e:
         print(f"Lỗi: {e}")
         raise HTTPException(status_code=400, detail="ID không hợp lệ")
-
-# --- CÁC API KHÁC (USER, DOCTOR, ADMIN, CHAT) GIỮ NGUYÊN ---
-# (Bạn giữ nguyên phần code API User Profile, Change Password, Assign Doctor, Chat như file cũ nhé)
-# ... [Phần code còn lại y hệt file cũ] ...
 
 @app.put("/api/medical-records/{record_id}/note")
 async def update_doctor_note(record_id: str, data: DoctorNoteRequest, current_user: dict = Depends(get_current_user)):
