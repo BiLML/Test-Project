@@ -1,12 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 
-// --- MOCK DATA TIN NHẮN (Giữ nguyên vì chưa có API tin nhắn) ---
-const MOCK_MESSAGES = [
-    { id: 1, sender: 'Bác sĩ Hùng', preview: 'Kết quả chụp đáy mắt của bạn đã có, vui lòng xem chi tiết...', time: '10:30 AM', unread: true, type: 'doctor' },
-    { id: 2, sender: 'Hệ thống AURA', preview: 'Chào mừng bạn đến với AURA! Hãy bắt đầu hành trình bảo vệ đôi mắt.', time: 'Yesterday', unread: false, type: 'system' },
-];
-
+// --- Dashboard Component (Bệnh nhân) ---
 const Dashboard: React.FC = () => {
     const navigate = useNavigate();
     
@@ -16,12 +11,35 @@ const Dashboard: React.FC = () => {
     const [userId, setUserId] = useState<string>('');
     const [isLoading, setIsLoading] = useState(true); 
     const [historyData, setHistoryData] = useState<any[]>([]);
+    
+    // ⭐ STATE CHAT ĐÃ CHUYỂN VÀO TRONG COMPONENT ⭐
+    const [chatData, setChatData] = useState<any[]>([]); 
 
     // State giao diện
     const [activeTab, setActiveTab] = useState<string>('home');
     const [showUserMenu, setShowUserMenu] = useState(false);
     const [showFabMenu, setShowFabMenu] = useState(false);
     const [showNotifications, setShowNotifications] = useState(false);
+
+    // --- HÀM TẢI CHAT MỚI ---
+    const fetchChatData = useCallback(async () => {
+        const token = localStorage.getItem('token');
+        if (!token) return;
+
+        try {
+            const res = await fetch('http://127.0.0.1:8000/api/chats', {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            if (res.ok) {
+                const data = await res.json();
+                setChatData(data.chats);
+            } else {
+                console.error("Lỗi tải chat:", res.status);
+            }
+        } catch (error) {
+            console.error("Lỗi kết nối khi tải chat:", error);
+        }
+    }, []);
 
     // --- HÀM LẤY LỊCH SỬ KHÁM ---
     const fetchMedicalRecords = async () => {
@@ -57,7 +75,7 @@ const Dashboard: React.FC = () => {
 
             try {
                 // 1. Lấy thông tin User
-                const userResponse = await fetch('http://127.0.0.1:8000/api/users/me', {
+                const userResponse = await fetch('http://127.00.0.1:8000/api/users/me', {
                     headers: { 'Authorization': `Bearer ${token}` }
                 });
 
@@ -73,8 +91,9 @@ const Dashboard: React.FC = () => {
                 setUserRole(info.role);
                 setUserId(info.id);
 
-                // 2. Lấy dữ liệu lịch sử
+                // 2. Lấy dữ liệu lịch sử và Chat
                 await fetchMedicalRecords();
+                await fetchChatData(); // GỌI CHAT DATA
 
             } catch (error) {
                 console.error("Lỗi tải dữ liệu:", error);
@@ -85,18 +104,20 @@ const Dashboard: React.FC = () => {
 
         initData();
 
-        // Polling cập nhật trạng thái AI (3 giây/lần)
+        // Polling cập nhật trạng thái AI và Chat (3 giây/lần)
         const intervalId = setInterval(() => {
             fetchMedicalRecords();
+            fetchChatData(); // THÊM POLLING CHO CHAT
         }, 3000);
 
         return () => clearInterval(intervalId);
 
-    }, [navigate]);
+    }, [navigate, fetchChatData]); // Thêm fetchChatData vào dependency
 
     const handleLogout = () => {
         localStorage.removeItem('token');
-        navigate('/login');
+        localStorage.removeItem('user_info');
+        navigate('/login', { replace: true });
     };
 
     // --- CÁC HÀM ĐIỀU HƯỚNG ---
@@ -109,13 +130,12 @@ const Dashboard: React.FC = () => {
     const toggleFabMenu = () => setShowFabMenu(!showFabMenu);
     const toggleNotifications = () => setShowNotifications(!showNotifications);
 
-    // --- HÀM MỚI: CHUYỂN HƯỚNG ĐẾN TRANG HỒ SƠ ---
     const goToProfilePage = () => {
-        setShowUserMenu(false); // Đóng dropdown menu
-        navigate('/profile');  // Chuyển hướng đến trang /profile
+        setShowUserMenu(false);
+        navigate('/profile'); 
     };
 
-    // --- TÍNH TOÁN THỐNG KÊ ---
+    // --- TÍNH TOÁN THỐNG KÊ VÀ CHAT ---
     const totalScans = historyData.length;
     const highRiskCount = historyData.filter(item =>
         item.result.includes('Nặng') ||
@@ -125,32 +145,42 @@ const Dashboard: React.FC = () => {
 
     const recentNotifications = historyData.slice(0, 5);
     const hasUnread = recentNotifications.some(item => item.status === 'Hoàn thành');
+    const unreadMessagesCount = chatData.filter(chat => chat.unread).length; // TÍNH TOÁN DỰA TRÊN CHAT DATA
 
     // --- RENDER CONTENT ---
     const renderContent = () => {
+        
+        // --- Tab MESSAGES (Sử dụng chatData) ---
         if (activeTab === 'messages') {
             return (
                 <div style={styles.contentContainer}>
                     <h2 style={{ marginBottom: '20px' }}>💬 Tin nhắn của bạn</h2>
                     <div style={styles.messageList}>
-                        {MOCK_MESSAGES.map(msg => (
-                            <div key={msg.id} style={styles.messageItem}>
-                                <div style={styles.messageAvatar}>{msg.type === 'doctor' ? 'BS' : 'A'}</div>
-                                <div style={{ flex: 1 }}>
-                                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                                        <strong style={{ color: msg.unread ? '#000' : '#666' }}>{msg.sender}</strong>
-                                        <small style={{ color: '#999' }}>{msg.time}</small>
+                        {chatData.length === 0 ? ( 
+                            <p style={{ padding: '20px', color: '#666', textAlign: 'center' }}>
+                                Bạn chưa có cuộc trò chuyện nào.
+                            </p>
+                        ) : (
+                            chatData.map(msg => (
+                                <div key={msg.id} style={styles.messageItem}>
+                                    <div style={styles.messageAvatar}>{msg.sender.charAt(0).toUpperCase()}</div> 
+                                    <div style={{ flex: 1 }}>
+                                        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                                            <strong style={{ color: msg.unread ? '#000' : '#666' }}>{msg.sender}</strong>
+                                            <small style={{ color: '#999' }}>{msg.time}</small>
+                                        </div>
+                                        <p style={{ margin: '5px 0 0', color: '#555', fontSize: '14px' }}>{msg.preview}</p>
                                     </div>
-                                    <p style={{ margin: '5px 0 0', color: '#555', fontSize: '14px' }}>{msg.preview}</p>
+                                    {msg.unread && <div style={styles.unreadDot}></div>}
                                 </div>
-                                {msg.unread && <div style={styles.unreadDot}></div>}
-                            </div>
-                        ))}
+                            ))
+                        )}
                     </div>
                 </div>
             );
         }
 
+        // --- Tab PAYMENTS (Giữ nguyên) ---
         if (activeTab === 'payments') {
             return (
                 <div style={styles.contentContainer}>
@@ -160,7 +190,7 @@ const Dashboard: React.FC = () => {
             );
         }
 
-        // TRANG CHỦ
+        // --- TRANG CHỦ (HOME) ---
         if (historyData.length === 0) {
             return (
                 <div style={styles.emptyStateContainer}>
@@ -251,7 +281,11 @@ const Dashboard: React.FC = () => {
                 </div>
                 <nav style={styles.navMenu}>
                     <button style={activeTab === 'home' ? styles.navItemActive : styles.navItem} onClick={() => handleNavClick('home')}>🏠 Trang chủ</button>
-                    <button style={activeTab === 'messages' ? styles.navItemActive : styles.navItem} onClick={() => handleNavClick('messages')}>💬 Tin nhắn</button>
+                    {/* Thêm badge tin nhắn chưa đọc vào menu */}
+                    <button style={activeTab === 'messages' ? styles.navItemActive : styles.navItem} onClick={() => handleNavClick('messages')}>
+                        💬 Tin nhắn
+                        {unreadMessagesCount > 0 && <span style={styles.chatBadge}>{unreadMessagesCount}</span>}
+                    </button>
                     <button style={activeTab === 'payments' ? styles.navItemActive : styles.navItem} onClick={() => handleNavClick('payments')}>💳 Dịch vụ thanh toán</button>
                 </nav>
             </aside>
@@ -297,7 +331,6 @@ const Dashboard: React.FC = () => {
                                     <div style={styles.dropdownHeader}>
                                         <strong>{userName}</strong><br/><small>{userRole}</small>
                                     </div>
-                                    {/* --- ĐÃ THAY BẰNG HÀM CHUYỂN HƯỚNG --- */}
                                     <button style={styles.dropdownItem} onClick={goToProfilePage}>👤 Hồ sơ cá nhân</button>
                                     <div style={{height: '1px', background: '#eee', margin: '5px 0'}}></div>
                                     <button style={{...styles.dropdownItem, color: '#dc3545'}} onClick={handleLogout}>🚪 Đăng xuất</button>
@@ -319,8 +352,6 @@ const Dashboard: React.FC = () => {
                 )}
                 <button style={styles.fabButton} onClick={toggleFabMenu} title="Chức năng mới">{showFabMenu ? '✕' : '+'}</button>
             </div>
-            
-            {/* --- ĐÃ XÓA TOÀN BỘ MODAL HỒ SƠ CÁ NHÂN KHỎI ĐÂY --- */}
         </div>
     );
 };

@@ -2,14 +2,20 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 
 const AnalysisResult: React.FC = () => {
-    const { id } = useParams();
+    const { id } = useParams(); // Using 'id' matching your route
     const navigate = useNavigate();
+    
+    // --- MAIN STATE ---
     const [data, setData] = useState<any>(null);
     const [loading, setLoading] = useState(true);
-    // --- MỚI: State quản lý chế độ xem ảnh ---
     const [viewMode, setViewMode] = useState<'original' | 'annotated'>('original');
 
-    // LOGIC 1: XÁC ĐỊNH MỨC ĐỘ & MÀU SẮC (Giữ nguyên)
+    // --- NEW STATE FOR DOCTOR NOTE ---
+    const [isDoctor, setIsDoctor] = useState(false);
+    const [doctorNote, setDoctorNote] = useState('');
+    const [isSavingNote, setIsSavingNote] = useState(false);
+
+    // LOGIC 1: SEVERITY & COLOR
     const getSeverityInfo = (diagnosis: string, confidence: number) => {
         if (confidence > 0 && confidence < 60) {
             return {
@@ -30,7 +36,7 @@ const AnalysisResult: React.FC = () => {
         return { color: '#28a745', label: 'An toàn', bg: '#d4edda', advice: '✅ Võng mạc khỏe mạnh. Tuyệt vời! Hãy duy trì thói quen kiểm tra định kỳ 6 tháng/lần.' };
     };
     
-    // LOGIC 1: KIẾN THỨC Y KHOA (Giữ nguyên)
+    // LOGIC 1: MEDICAL INSIGHTS
     const getMedicalInsights = (diagnosis: string) => {
         if (!diagnosis) return null;
         if (diagnosis.includes("Tăng sinh") || diagnosis.includes("Nặng")) {
@@ -61,7 +67,7 @@ const AnalysisResult: React.FC = () => {
         };
     };
 
-    // LOGIC 2: TỰ ĐỘNG CẬP NHẬT (POLLING) (Giữ nguyên)
+    // LOGIC 2: FETCH DATA & CHECK ROLE
     const fetchData = useCallback(async () => {
         const token = localStorage.getItem('token');
         if (!token) {
@@ -70,15 +76,37 @@ const AnalysisResult: React.FC = () => {
         }
 
         try {
+            // 1. Fetch User Info to check Role
+            const userRes = await fetch('http://127.0.0.1:8000/api/users/me', { 
+                headers: { 'Authorization': `Bearer ${token}` } 
+            });
+            
+            let isDoc = false;
+            if (userRes.ok) {
+                const userData = await userRes.json();
+                const role = userData.user_info.role;
+                isDoc = role && role.toUpperCase() === 'DOCTOR';
+                setIsDoctor(isDoc);
+            }
+
+            // 2. Fetch Medical Record
             const res = await fetch(`http://127.0.0.1:8000/api/medical-records/${id}`, {
                 headers: { 'Authorization': `Bearer ${token}` }
             });
+
             if (res.ok) {
                 const result = await res.json();
                 setData(result);
+                
+                // If Doctor, sync local state with fetched note
+                if (isDoc) {
+                    setDoctorNote(result.doctor_note || '');
+                }
                 return result.status; 
             } else {
                 console.error("Lỗi tải dữ liệu");
+                // Navigate based on role if failed
+                navigate(isDoc ? '/dashboarddr' : '/dashboard');
             }
         } catch (err) {
             console.error(err);
@@ -88,56 +116,94 @@ const AnalysisResult: React.FC = () => {
         return "FAILED";
     }, [id, navigate]);
 
+    // Polling Effect
     useEffect(() => {
         fetchData();
         const intervalId = setInterval(async () => {
             const status = await fetchData();
-            // NFR-1: Tự động dừng polling khi phân tích hoàn tất
+            // Stop polling if completed or failed
             if (status === "Hoàn thành" || status === "FAILED") {
                 clearInterval(intervalId); 
             }
-        }, 2000); // Polling mỗi 2 giây
+        }, 2000); // Poll every 2 seconds
         return () => clearInterval(intervalId);
     }, [fetchData]);
+
+    // LOGIC: SAVE DOCTOR NOTE
+    const handleSaveDoctorNote = async () => {
+        if (!doctorNote.trim() || !id) {
+            alert("Vui lòng nhập ghi chú trước khi lưu.");
+            return;
+        }
+
+        const token = localStorage.getItem('token');
+        setIsSavingNote(true);
+
+        try {
+            const res = await fetch(`http://127.0.0.1:8000/api/medical-records/${id}/note`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify({ doctor_note: doctorNote })
+            });
+
+            const responseData = await res.json();
+
+            if (res.ok) {
+                alert(responseData.message || "Lưu ghi chú thành công!");
+                // Update local data to reflect change immediately
+                // Explicitly typing 'prev' as any to avoid TS error
+                setData((prev: any) => ({ ...prev, doctor_note: doctorNote }));
+            } else {
+                alert(responseData.detail || "Lỗi khi lưu ghi chú.");
+            }
+        } catch (error) {
+            console.error("Lỗi API Doctor Note:", error);
+            alert("Lỗi kết nối server.");
+        } finally {
+            setIsSavingNote(false);
+        }
+    };
 
     if (loading) return <div style={{display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', color: '#666'}}>⏳ Đang tải kết quả phân tích...</div>;
     if (!data) return null;
 
-    // LOGIC 3: PARSE KẾT QUẢ TỪ BACKEND (Giữ nguyên)
+    // LOGIC 3: PARSE RESULT FROM BACKEND
     let diagnosis = data.result;
     let confidence = 0;
 
     if (data.result && data.result.includes(" (") && data.result.endsWith("%)")) {
-        // Ví dụ: Bình thường (No DR) (98.54%)
         const confidenceMatch = data.result.match(/\(([\d.]+)\%\)/);
         if (confidenceMatch) {
             confidence = parseFloat(confidenceMatch[1]);
         }
-        diagnosis = data.result.split(" (")[0]; // Cắt bỏ phần confidence
+        diagnosis = data.result.split(" (")[0];
     }
 
     const severity = getSeverityInfo(diagnosis, confidence);
     const insights = getMedicalInsights(diagnosis);
     
-    // --- XÁC ĐỊNH URL ẢNH HIỂN THỊ ---
+    // Determine Image URL
     const imageUrl = viewMode === 'annotated' && data.annotated_image_url
-        ? data.annotated_image_url // Ảnh chú thích (FR-4)
-        : data.image_url;           // Ảnh gốc (Mặc định)
+        ? data.annotated_image_url 
+        : data.image_url;
 
     return (
         <div style={styles.container}>
-            <button onClick={() => navigate('/dashboard')} style={styles.backBtn}>&larr; Quay lại Dashboard</button>
+            <button onClick={() => navigate(isDoctor ? '/dashboarddr' : '/dashboard')} style={styles.backBtn}>&larr; Quay lại Dashboard</button>
             
             <div style={styles.card}>
                 <div style={styles.header}>
                     <h2 style={{margin: 0, display: 'flex', alignItems: 'center', gap: '10px'}}>
-                        👁️ Kết quả Phân tích AI
+                        {isDoctor ? '🧑‍⚕️ Xem xét & Chẩn đoán' : '👁️ Kết quả Phân tích AI'}
                     </h2>
                     <span style={styles.dateBadge}>{data.date} - {data.time}</span>
                 </div>
 
                 <div style={styles.contentGrid}>
-                    {/* Cột Trái: Ảnh */}
+                    {/* Left Column: Image */}
                     <div style={styles.imageSection}>
                         <img 
                             src={imageUrl} 
@@ -145,7 +211,7 @@ const AnalysisResult: React.FC = () => {
                             style={styles.image} 
                         />
                         
-                        {/* --- NÚT CHUYỂN ĐỔI ẢNH (MỚI) --- */}
+                        {/* Image Switcher */}
                         {data.status === 'Hoàn thành' && (
                             <div style={styles.imageControls}>
                                 <button 
@@ -156,7 +222,6 @@ const AnalysisResult: React.FC = () => {
                                 </button>
                                 <button 
                                     onClick={() => setViewMode('annotated')} 
-                                    // Ẩn nếu Backend chưa trả về URL chú thích
                                     disabled={!data.annotated_image_url}
                                     style={viewMode === 'annotated' ? styles.tabActive : styles.tab}
                                 >
@@ -173,7 +238,7 @@ const AnalysisResult: React.FC = () => {
                         )}
                     </div>
 
-                    {/* Cột Phải: Kết quả */}
+                    {/* Right Column: Info */}
                     <div style={styles.infoSection}>
                         {data.status !== 'Hoàn thành' ? (
                             <div style={{textAlign: 'center', padding: '40px', backgroundColor: '#f8f9fa', borderRadius: '12px'}}>
@@ -216,9 +281,7 @@ const AnalysisResult: React.FC = () => {
                                         <h4 style={{margin: '0 0 15px 0', color: '#c0392b', display: 'flex', alignItems: 'center', gap: '8px', borderBottom: '1px solid #ffcccc', paddingBottom: '10px'}}>
                                             📊 Phân tích Rủi ro & Dự báo
                                         </h4>
-                                        
                                         <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px'}}>
-                                            {/* Cột 1: Rủi ro tại Mắt */}
                                             <div>
                                                 <strong style={{color: '#007bff', display: 'block', marginBottom: '8px', fontSize: '14px'}}>👁️ Tại Mắt:</strong>
                                                 <ul style={{margin: 0, paddingLeft: '20px', fontSize: '13px', color: '#555'}}>
@@ -227,8 +290,6 @@ const AnalysisResult: React.FC = () => {
                                                     ))}
                                                 </ul>
                                             </div>
-
-                                            {/* Cột 2: Rủi ro Toàn thân */}
                                             <div>
                                                 <strong style={{color: '#dc3545', display: 'block', marginBottom: '8px', fontSize: '14px'}}>🫀 Toàn thân (Tim/Não):</strong>
                                                 <ul style={{margin: 0, paddingLeft: '20px', fontSize: '13px', color: '#555'}}>
@@ -238,7 +299,6 @@ const AnalysisResult: React.FC = () => {
                                                 </ul>
                                             </div>
                                         </div>
-
                                         <div style={{marginTop: '15px', paddingTop: '10px', borderTop: '1px dashed #ccc', fontSize: '14px', fontStyle: 'italic'}}>
                                             <strong>🔮 Tiên lượng: </strong>
                                             <span style={{color: '#333'}}>{insights.prognosis}</span>
@@ -246,12 +306,39 @@ const AnalysisResult: React.FC = () => {
                                     </div>
                                 )}
                                 
-                                <div style={styles.doctorNote}>
-                                    <strong>📝 Ghi chú bác sĩ:</strong>
-                                    <p style={{margin: '5px 0 0'}}>{data.doctor_note}</p>
-                                </div>
-                                
-                                <button style={styles.actionBtn}>Đặt lịch khám chuyên sâu</button>
+                                {/* --- DOCTOR NOTE SECTION --- */}
+                                {isDoctor ? (
+                                    <div style={styles.doctorNoteContainer}>
+                                        <h4 style={styles.doctorNoteTitle}>📝 Ghi chú & Chẩn đoán của Bác sĩ</h4>
+                                        <textarea
+                                            value={doctorNote}
+                                            onChange={(e) => setDoctorNote(e.target.value)}
+                                            style={styles.doctorNoteTextarea}
+                                            rows={5}
+                                            placeholder="Nhập chẩn đoán lâm sàng, chỉ định điều trị và lời khuyên cho bệnh nhân tại đây..."
+                                            disabled={isSavingNote}
+                                        />
+                                        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '10px' }}>
+                                            <button 
+                                                onClick={handleSaveDoctorNote} 
+                                                style={styles.saveNoteBtn}
+                                                disabled={isSavingNote || !doctorNote.trim()}
+                                            >
+                                                {isSavingNote ? 'Đang lưu...' : 'Lưu Ghi chú Chẩn đoán'}
+                                            </button>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    // USER VIEW
+                                    data.doctor_note ? (
+                                        <div style={styles.doctorNoteContainer}>
+                                            <h4 style={styles.doctorNoteTitle}>📋 Chẩn đoán từ Bác sĩ</h4>
+                                            <p style={{...styles.userNoteDisplay, margin: 0, whiteSpace: 'pre-wrap'}}>{data.doctor_note}</p>
+                                        </div>
+                                    ) : (
+                                        <button style={styles.actionBtn}>Đặt lịch khám chuyên sâu</button>
+                                    )
+                                )}
                             </>
                         )}
                     </div>
@@ -261,7 +348,7 @@ const AnalysisResult: React.FC = () => {
     );
 };
 
-// CSS bổ sung (Đã thêm styles cho tab chuyển đổi ảnh)
+// CSS
 const styles: { [key: string]: React.CSSProperties } = {
     container: { padding: '40px', backgroundColor: '#f4f6f9', minHeight: '100vh', fontFamily: "'Segoe UI', sans-serif" },
     backBtn: { background: 'none', border: 'none', color: '#007bff', cursor: 'pointer', fontSize: '16px', marginBottom: '20px', fontWeight: 'bold' },
@@ -273,7 +360,51 @@ const styles: { [key: string]: React.CSSProperties } = {
     image: { width: '100%', height: '100%', objectFit: 'contain' },
     infoSection: { display: 'flex', flexDirection: 'column' },
     label: { fontSize: '14px', color: '#999', textTransform: 'uppercase', letterSpacing: '1px', fontWeight: 'bold' },
-    doctorNote: { backgroundColor: '#fff3cd', padding: '15px', borderRadius: '8px', border: '1px solid #ffeeba', marginTop: 'auto', marginBottom: '20px', color: '#856404' },
+    
+    // DOCTOR NOTE STYLES
+    doctorNoteContainer: { 
+        marginTop: '20px', 
+        padding: '20px', 
+        backgroundColor: '#f9f9f9', 
+        border: '1px solid #ddd', 
+        borderRadius: '10px',
+        display: 'flex',
+        flexDirection: 'column',
+    },
+    doctorNoteTitle: {
+        fontSize: '18px',
+        fontWeight: '700',
+        color: '#34495e',
+        borderBottom: '2px solid #ccc',
+        paddingBottom: '10px',
+        marginBottom: '15px',
+    },
+    doctorNoteTextarea: {
+        width: '100%',
+        padding: '10px',
+        borderRadius: '6px',
+        border: '1px solid #ccc',
+        fontSize: '14px',
+        resize: 'vertical',
+    },
+    saveNoteBtn: {
+        backgroundColor: '#2ecc71',
+        color: 'white',
+        border: 'none',
+        padding: '10px 20px',
+        borderRadius: '6px',
+        cursor: 'pointer',
+        fontSize: '14px',
+        fontWeight: '600',
+    },
+    userNoteDisplay: {
+        backgroundColor: 'white',
+        padding: '15px',
+        borderRadius: '6px',
+        border: '1px solid #e0e0e0',
+        color: '#333',
+    },
+    
     actionBtn: { width: '100%', padding: '15px', backgroundColor: '#007bff', color: 'white', border: 'none', borderRadius: '8px', fontSize: '16px', fontWeight: 'bold', cursor: 'pointer', transition: '0.2s' },
     
     processingOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.7)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' },
@@ -282,7 +413,6 @@ const styles: { [key: string]: React.CSSProperties } = {
     progressBarFill: { height: '100%', borderRadius: '4px', transition: 'width 1s ease-in-out' },
     riskBox: { backgroundColor: '#fff5f5', padding: '20px', borderRadius: '8px', border: '1px solid #ffcccc', marginBottom: '20px' },
     
-    // --- STYLE CHO NÚT CHUYỂN ĐỔI ẢNH (MỚI) ---
     imageControls: { 
         position: 'absolute', 
         top: '15px', 
@@ -308,7 +438,7 @@ const styles: { [key: string]: React.CSSProperties } = {
     tabActive: {
         padding: '8px 15px',
         border: 'none',
-        backgroundColor: '#007bff', // Màu xanh chủ đạo
+        backgroundColor: '#007bff',
         color: 'white',
         cursor: 'pointer',
         fontSize: '13px',

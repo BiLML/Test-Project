@@ -43,7 +43,7 @@ MONGO_URL = os.getenv("MONGO_URL", "mongodb://localhost:27017")
 client = AsyncIOMotorClient(MONGO_URL)
 db = client.aura_db
 users_collection = db.users
-medical_records_collection = db.medical_records # <--- Tối ưu hóa tên collection
+medical_records_collection = db.medical_records
 
 # 5. Cấu hình Bảo mật
 SECRET_KEY = os.getenv("SECRET_KEY", "secret_mac_dinh")
@@ -89,7 +89,6 @@ def preprocess_image_ben_graham(image_bytes):
     img = cv2.resize(img, (224, 224))
     
     # 3. Kỹ thuật Ben Graham (Làm rõ mạch máu)
-    # Đây là bước quan trọng để model nhận diện đúng các tổn thương nhỏ
     img = cv2.addWeighted(img, 4, cv2.GaussianBlur(img, (0,0), 10), -4, 128)
     
     # 4. Chuẩn hóa theo chuẩn EfficientNet
@@ -99,6 +98,7 @@ def preprocess_image_ben_graham(image_bytes):
     img_batch = np.expand_dims(img, axis=0)
     
     return img_batch
+
 # --- HÀM VẼ CHÚ THÍCH (MÔ PHỎNG DỰA TRÊN KẾT QUẢ PHÂN LOẠI) ---
 def generate_annotated_image(image_bytes: bytes, class_name: str) -> bytes:
     """Tạo ra ảnh có chú thích (chủ yếu là khung và text) dựa trên kết quả phân loại."""
@@ -124,7 +124,7 @@ def generate_annotated_image(image_bytes: bytes, class_name: str) -> bytes:
     # Vẽ hộp text ở góc trên bên trái
     cv2.putText(annotated_img, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2, cv2.LINE_AA)
     
-    # MÔ PHỎNG VẼ KHUNG/KHOANH VÙNG: Vẽ một hình tròn/vuông tượng trưng cho tổn thương
+    # MÔ PHỎNG VẼ KHUNG/KHOANH VÙNG
     if "DR" in class_name or "Nhẹ" in class_name or "Trung bình" in class_name:
         cv2.circle(annotated_img, (w - 50, h - 50), 30, color, -1) # Vẽ chấm tròn
 
@@ -135,7 +135,7 @@ def generate_annotated_image(image_bytes: bytes, class_name: str) -> bytes:
         
     return buffer.tobytes()
 
-# --- TÁC VỤ NGẦM: AI PHÂN TÍCH THỰC TẾ (ĐÃ LOẠI BỎ LOGIC TỰ ĐỘNG GÁN) ---
+# --- TÁC VỤ NGẦM: AI PHÂN TÍCH THỰC TẾ ---
 async def real_ai_analysis(record_id: str, image_url: str):
     print(f"🤖 AI đang bắt đầu phân tích hồ sơ: {record_id}...")
     
@@ -186,7 +186,7 @@ async def real_ai_analysis(record_id: str, image_url: str):
                     "ai_result": final_result,
                     "ai_confidence": confidence, 
                     "ai_raw_class": int(class_idx),
-                    "annotated_image_url": annotated_url # <-- Cập nhật URL ảnh có chú thích
+                    "annotated_image_url": annotated_url
                 }
             }
         )
@@ -205,7 +205,7 @@ async def real_ai_analysis(record_id: str, image_url: str):
             }
         )
 
-# --- CÁC HÀM HỖ TRỢ (GIỮ NGUYÊN) ---
+# --- CÁC HÀM HỖ TRỢ ---
 
 def create_access_token(data: dict):
     to_encode = data.copy()
@@ -269,20 +269,21 @@ class UserProfileUpdate(BaseModel):
     phone: str = None
     age: str = None      
     hometown: str = None
-    insurance_id: str = None # Mã bảo hiểm y tế
-    height: str = None # Chiều cao
-    weight: str = None # Cân nặng
-    gender: str = None # Giới tính
-    nationality: str = None # Quốc tịch
+    insurance_id: str = None
+    height: str = None
+    weight: str = None
+    gender: str = None
+    nationality: str = None
 
-# MỚI: Model để nhận request đổi username
 class UpdateUsernameRequest(BaseModel):
     new_username: str
 
-# MỚI: Model cho việc phân công bác sĩ
 class AssignDoctorRequest(BaseModel):
     patient_id: str
     doctor_id: str
+
+class DoctorNoteRequest(BaseModel):
+    doctor_note: str
 
 # --- API ENDPOINTS ---
 
@@ -321,7 +322,7 @@ async def login(data: LoginRequest):
 
     token_data = {"sub": user["userName"], "role": user["role"]}
     access_token = create_access_token(token_data)
-    standardized_role = user.get("role", "USER").lower()
+    
     return {
         "message": "Đăng nhập thành công",
         "access_token": access_token,
@@ -397,15 +398,15 @@ async def get_medical_records(current_user: dict = Depends(get_current_user)):
         
     return {"history": results}
 
-# --- TRONG API GET /api/medical-records/{record_id} ---
-
 @app.get("/api/medical-records/{record_id}")
 async def get_single_record(record_id: str, current_user: dict = Depends(get_current_user)):
     try:
-        record = await medical_records_collection.find_one({
-            "_id": ObjectId(record_id),
-            "user_id": current_user["id"]
-        })
+        # Bác sĩ có thể xem bất kỳ hồ sơ nào, User chỉ xem của mình
+        query = {"_id": ObjectId(record_id)}
+        if current_user["role"] != "DOCTOR":
+            query["user_id"] = current_user["id"]
+
+        record = await medical_records_collection.find_one(query)
         
         if not record:
             raise HTTPException(status_code=404, detail="Không tìm thấy hồ sơ bệnh án")
@@ -417,34 +418,51 @@ async def get_single_record(record_id: str, current_user: dict = Depends(get_cur
             "result": record["ai_result"],
             "status": "Hoàn thành" if record["ai_analysis_status"] == "COMPLETED" else "Đang xử lý",
             "image_url": record["image_url"], # Ảnh gốc
-            "annotated_image_url": record.get("annotated_image_url"), # <-- Trả về URL ảnh chú thích
-            "doctor_note": record.get("doctor_note", "Chưa có ghi chú từ bác sĩ.") 
+            "annotated_image_url": record.get("annotated_image_url"), # Ảnh chú thích
+            "doctor_note": record.get("doctor_note", "") 
         }
     except Exception as e:
         print(f"Lỗi: {e}")
         raise HTTPException(status_code=400, detail="ID không hợp lệ")
-    
-# --- API PHÂN CÔNG BÁC SĨ (MỚI) ---
+
+# --- API LƯU GHI CHÚ BÁC SĨ ---
+@app.put("/api/medical-records/{record_id}/note")
+async def update_doctor_note(record_id: str, data: DoctorNoteRequest, current_user: dict = Depends(get_current_user)):
+    # Chỉ Doctor mới được sửa
+    if current_user["role"] != "DOCTOR":
+        raise HTTPException(status_code=403, detail="Chỉ Bác sĩ mới có quyền thêm ghi chú.")
+
+    try:
+        result = await medical_records_collection.update_one(
+            {"_id": ObjectId(record_id)},
+            {"$set": {"doctor_note": data.doctor_note}}
+        )
+        if result.matched_count == 0:
+            raise HTTPException(status_code=404, detail="Không tìm thấy hồ sơ.")
+            
+        return {"message": "Đã lưu ghi chú bác sĩ."}
+    except Exception as e:
+        print(f"Lỗi lưu note: {e}")
+        raise HTTPException(status_code=500, detail="Lỗi server.")
+
+# --- API PHÂN CÔNG BÁC SĨ ---
 @app.post("/api/admin/assign-doctor")
 async def assign_doctor(data: AssignDoctorRequest, current_user: dict = Depends(get_current_user)):
-    # 1. KIỂM TRA QUYỀN (CHỈ ADMIN HOẶC DOCTOR MỚI CÓ THỂ THỰC HIỆN)
     if current_user["role"] != "ADMIN" and current_user["role"] != "DOCTOR":
         raise HTTPException(status_code=403, detail="Bạn không có quyền phân công bác sĩ.")
 
     try:
-        # 2. XÁC THỰC: Đảm bảo Doctor ID hợp lệ và có role DOCTOR
         doctor = await users_collection.find_one({"_id": ObjectId(data.doctor_id), "role": "DOCTOR"})
         if not doctor:
-            raise HTTPException(status_code=404, detail="ID bác sĩ không tồn tại hoặc không phải là bác sĩ.")
+            raise HTTPException(status_code=404, detail="ID bác sĩ không tồn tại.")
         
-        # 3. PHÂN CÔNG: Cập nhật hồ sơ bệnh nhân (users collection)
         result = await users_collection.update_one(
             {"_id": ObjectId(data.patient_id)},
             {"$set": {"assigned_doctor_id": data.doctor_id}}
         )
 
         if result.modified_count == 0:
-            raise HTTPException(status_code=404, detail="Không tìm thấy bệnh nhân để phân công.")
+            raise HTTPException(status_code=404, detail="Không tìm thấy bệnh nhân.")
 
         return {"message": "Phân công bác sĩ thành công.", "doctor_name": doctor["userName"]}
 
@@ -452,37 +470,29 @@ async def assign_doctor(data: AssignDoctorRequest, current_user: dict = Depends(
         raise http_err
     except Exception as e:
         print(f"Lỗi phân công: {e}")
-        raise HTTPException(status_code=400, detail="ID không hợp lệ hoặc lỗi server.")
+        raise HTTPException(status_code=400, detail="Lỗi server.")
 
-# --- API GOOGLE LOGIN (CẬP NHẬT) ---
+# --- API GOOGLE LOGIN ---
 @app.post("/api/google-login")
 async def google_login(data: GoogleLoginRequest):
-    # 1. Lấy thông tin từ Google
-    google_response = requests.get(
-        f"https://www.googleapis.com/oauth2/v3/userinfo?access_token={data.token}"
-    )
-    
+    google_response = requests.get(f"https://www.googleapis.com/oauth2/v3/userinfo?access_token={data.token}")
     if google_response.status_code != 200:
-        raise HTTPException(status_code=400, detail="Token Google không hợp lệ hoặc đã hết hạn")
+        raise HTTPException(status_code=400, detail="Token Google không hợp lệ")
         
     google_user = google_response.json()
     email = google_user.get('email')
     name = google_user.get('name', 'Google User')
     
     if not email:
-        raise HTTPException(status_code=400, detail="Không lấy được email từ Google")
+        raise HTTPException(status_code=400, detail="Không lấy được email")
 
-    # 2. Tìm User trong DB bằng EMAIL (Tránh trùng lặp)
     user = await users_collection.find_one({"email": email})
-    
     is_new_user = False
     
     if not user:
-        # Trường hợp chưa có tài khoản: Tạo mới
-        # Tạm thời lưu userName = email. Sau đó Client sẽ gọi API đổi tên.
         new_user = {
             "userName": email, 
-            "email": email,     # Quan trọng: Lưu email để đối chiếu
+            "email": email,
             "password": "", 
             "role": "USER",
             "auth_provider": "google",
@@ -492,13 +502,11 @@ async def google_login(data: GoogleLoginRequest):
         result = await users_collection.insert_one(new_user)
         user = new_user 
         user["_id"] = result.inserted_id
-        is_new_user = True # Đánh dấu là user mới
+        is_new_user = True
     else:
-        # Trường hợp đã có tài khoản, nhưng userName vẫn giống email -> coi như user mới cần đổi tên
         if user.get("userName") == email:
             is_new_user = True
             
-    # 3. Tạo Token
     token_data = {"sub": user["userName"], "role": user.get("role", "USER")}
     access_token = create_access_token(token_data)
     
@@ -511,121 +519,64 @@ async def google_login(data: GoogleLoginRequest):
             "role": user.get("role", "USER"),
             "email": user.get("email")
         },
-        "is_new_user": is_new_user # Backend trả về cờ này để Frontend biết đường chuyển hướng
+        "is_new_user": is_new_user
     }
 
-# --- API ĐỔI TÊN NGƯỜI DÙNG (SET USERNAME) ---
+# --- API ĐỔI TÊN ---
 @app.put("/api/users/set-username")
 async def set_username(data: UpdateUsernameRequest, current_user: dict = Depends(get_current_user)):
     user_id = current_user["id"]
     new_username = data.new_username.strip()
     
-    # 1. Validate
     if len(new_username) < 3:
-        raise HTTPException(status_code=400, detail="Tên người dùng phải có ít nhất 3 ký tự")
+        raise HTTPException(status_code=400, detail="Tên quá ngắn")
     
-    # 2. Kiểm tra trùng lặp
     existing_user = await users_collection.find_one({"userName": new_username})
     if existing_user:
-        raise HTTPException(status_code=400, detail="Tên người dùng này đã tồn tại, vui lòng chọn tên khác")
+        raise HTTPException(status_code=400, detail="Tên đã tồn tại")
 
-    # 3. Cập nhật vào DB
-    await users_collection.update_one(
-        {"_id": ObjectId(user_id)},
-        {"$set": {"userName": new_username}}
-    )
+    await users_collection.update_one({"_id": ObjectId(user_id)}, {"$set": {"userName": new_username}})
     
-    # 4. Cấp lại Token mới (Vì Token cũ chứa userName cũ, giờ đổi rồi phải cấp lại)
     new_token_data = {"sub": new_username, "role": current_user["role"]}
     new_access_token = create_access_token(new_token_data)
 
-    return {
-        "message": "Cập nhật tên người dùng thành công",
-        "new_access_token": new_access_token, # Frontend cần lưu lại token mới này
-        "new_username": new_username
-    }
+    return {"message": "Cập nhật thành công", "new_access_token": new_access_token, "new_username": new_username}
 
-# --- TRONG FILE main.py ---
-
+# --- API PROFILE ---
 @app.put("/api/users/profile")
 async def update_user_profile(data: UserProfileUpdate, current_user: dict = Depends(get_current_user)):
     try:
         user_id = current_user["id"]
-        
-        # 1. KIỂM TRA EMAIL TRÙNG LẶP (Logic Mới)
         if data.email:
-            # Tìm xem có ai khác đang dùng email này không
-            # Điều kiện: Email trùng VÀ ID không phải là của người đang sửa
-            existing_email = await users_collection.find_one({
-                "email": data.email,
-                "_id": {"$ne": ObjectId(user_id)} # $ne nghĩa là Not Equal (Không bằng)
-            })
-            
-            if existing_email:
-                raise HTTPException(status_code=400, detail="Email này đã được sử dụng bởi tài khoản khác.")
-
-        # 2. KIỂM TRA SỐ ĐIỆN THOẠI TRÙNG LẶP (Nên làm luôn)
+            existing = await users_collection.find_one({"email": data.email, "_id": {"$ne": ObjectId(user_id)}})
+            if existing: raise HTTPException(status_code=400, detail="Email đã dùng")
         if data.phone:
-            existing_phone = await users_collection.find_one({
-                "phone": data.phone,
-                "_id": {"$ne": ObjectId(user_id)}
-            })
-            
-            if existing_phone:
-                raise HTTPException(status_code=400, detail="Số điện thoại này đã được sử dụng.")
+            existing = await users_collection.find_one({"phone": data.phone, "_id": {"$ne": ObjectId(user_id)}})
+            if existing: raise HTTPException(status_code=400, detail="SĐT đã dùng")
 
-        # 3. Tạo data update
-        update_data = {
-            "email": data.email,
-            "phone": data.phone,
-            "age": data.age,
-            "hometown": data.hometown,
-            "insurance_id": data.insurance_id,
-            "height": data.height,
-            "weight": data.weight,
-            "gender": data.gender,
-            "nationality": data.nationality,
-        }
+        update_data = {k: v for k, v in data.dict().items() if v is not None}
         
-        # 4. Lưu vào DB
-        await users_collection.update_one(
-            {"_id": ObjectId(user_id)},
-            {"$set": update_data}
-        )
-        
+        await users_collection.update_one({"_id": ObjectId(user_id)}, {"$set": update_data})
         return {"message": "Cập nhật hồ sơ thành công", "data": update_data}
-        
-    except HTTPException as http_err:
-        # Bắt lỗi HTTP mình vừa raise ở trên để trả về ngay
-        raise http_err
+    except HTTPException as e: raise e
     except Exception as e:
         print(f"Lỗi update profile: {e}")
-        raise HTTPException(status_code=500, detail="Lỗi server khi cập nhật hồ sơ")
-# --- TRONG FILE backend/main.py ---
+        raise HTTPException(status_code=500, detail="Lỗi server")
 
+# --- API DOCTOR: MY PATIENTS ---
 @app.get("/api/doctor/my-patients")
 async def get_doctor_assigned_patients(current_user: dict = Depends(get_current_user)):
-    # 1. Kiểm tra vai trò DOCTOR
     if current_user["role"] != "DOCTOR":
-        raise HTTPException(status_code=403, detail="Chỉ Bác sĩ mới có quyền truy cập danh sách bệnh nhân được gán.")
+        raise HTTPException(status_code=403, detail="Quyền bị từ chối.")
 
     doctor_id = current_user["id"]
-    
-    # 2. Tìm tất cả người dùng (bệnh nhân) đã được gán cho doctor_id này
-    # Lưu ý: Tìm trong collection 'users' vì trường assigned_doctor_id nằm ở đó.
     patient_cursor = users_collection.find({"assigned_doctor_id": doctor_id}).sort("userName", 1)
     
     patients_list = []
     async for patient in patient_cursor:
         patient_id = str(patient["_id"])
+        latest_record = await medical_records_collection.find_one({"user_id": patient_id}, sort=[("upload_date", -1)])
         
-        # 3. Lấy hồ sơ bệnh án gần nhất của bệnh nhân này (Nếu có)
-        latest_record = await medical_records_collection.find_one(
-            {"user_id": patient_id},
-            sort=[("upload_date", -1)] # Sắp xếp theo ngày tải lên giảm dần
-        )
-        
-        # 4. Gom dữ liệu
         patients_list.append({
             "id": patient_id,
             "userName": patient["userName"],
@@ -642,17 +593,12 @@ async def get_doctor_assigned_patients(current_user: dict = Depends(get_current_
         
     return {"patients": patients_list}
 
-# --- TRONG FILE backend/main.py ---
-
-# API MỚI: Lấy danh sách tất cả người dùng (Cho Admin)
+# --- API ADMIN: ALL USERS ---
 @app.get("/api/admin/users")
 async def get_all_users(current_user: dict = Depends(get_current_user)):
-    # 1. KIỂM TRA QUYỀN ADMIN
     if current_user["role"] != "ADMIN":
-        raise HTTPException(status_code=403, detail="Chỉ Admin mới có quyền truy cập.")
+        raise HTTPException(status_code=403, detail="Quyền bị từ chối.")
     
-    # 2. Tải tất cả người dùng (và phân loại thành USER, DOCTOR, ADMIN)
-    # Thêm trường 'status' nếu chưa có trong DB
     user_cursor = users_collection.find() 
     users_list = []
     
@@ -662,11 +608,58 @@ async def get_all_users(current_user: dict = Depends(get_current_user)):
             "userName": user["userName"],
             "email": user.get("email", ""),
             "role": user.get("role", "USER"),
-            "status": user.get("status", "ACTIVE"),  # Trạng thái mặc định là ACTIVE
+            "status": user.get("status", "ACTIVE"),
             "assigned_doctor_id": user.get("assigned_doctor_id", None)
         })
         
     return {"users": users_list}
 
-# API này phải nằm TRƯỚC API dành cho Doctor/User khác nếu chúng có cùng path prefix.
-# ... (Các API khác như assign_doctor, v.v. nằm ở đây)
+# --- API CHATS (ĐÃ SỬA: QUERY DB THẬT) ---
+@app.get("/api/chats")
+async def get_chats(current_user: dict = Depends(get_current_user)):
+    user_id = current_user["id"]
+    user_role = current_user["role"]
+    chats = []
+
+    # CASE 1: BÁC SĨ (Tìm bệnh nhân được gán cho mình)
+    if user_role == "DOCTOR":
+        patients_cursor = users_collection.find({"assigned_doctor_id": user_id})
+        async for patient in patients_cursor:
+            chats.append({
+                "id": str(patient["_id"]),
+                "sender": patient["userName"],
+                "preview": "Bác sĩ ơi, tôi đã có kết quả chụp mới...",
+                "time": "Vừa xong",
+                "unread": True,
+                "interlocutor_id": str(patient["_id"])
+            })
+
+    # CASE 2: BỆNH NHÂN (Tìm bác sĩ phụ trách mình)
+    elif user_role == "USER":
+        assigned_doc_id = current_user.get("assigned_doctor_id")
+        if assigned_doc_id:
+            try:
+                doctor = await users_collection.find_one({"_id": ObjectId(assigned_doc_id)})
+                if doctor:
+                    chats.append({
+                        "id": str(doctor["_id"]),
+                        "sender": f"BS. {doctor['userName']}",
+                        "preview": "Chào bạn, hãy thường xuyên cập nhật tình trạng nhé.",
+                        "time": "Hôm nay",
+                        "unread": True,
+                        "interlocutor_id": str(doctor["_id"])
+                    })
+            except:
+                pass
+        
+        # Tin nhắn hệ thống mặc định
+        chats.append({
+            "id": "system_01",
+            "sender": "Hệ thống AURA",
+            "preview": "Chào mừng bạn! Hãy chụp ảnh đáy mắt để bắt đầu.",
+            "time": "Hôm qua",
+            "unread": False,
+            "interlocutor_id": "system"
+        })
+
+    return {"chats": chats}
