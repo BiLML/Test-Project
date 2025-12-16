@@ -1,98 +1,174 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+// Thêm icon FaLock vào import
+import { FaUser, FaCheckCircle, FaExclamationCircle, FaLock } from 'react-icons/fa';
 
-const SetUsername: React.FC = () => {
-    const [username, setUsername] = useState('');
+import './App.css'; // Đường dẫn CSS của bạn
+
+const SetUsername = () => {
+    const [newUsername, setNewUsername] = useState('');
+    const [newPassword, setNewPassword] = useState('');
+    const [confirmPassword, setConfirmPassword] = useState('');
+    
+    const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
-    const [isLoading, setIsLoading] = useState(false);
     const navigate = useNavigate();
 
-    const handleSubmit = async (e: React.FormEvent) => {
+    const handleUpdate = async (e: React.FormEvent) => {
         e.preventDefault();
-        setError('');
-        setIsLoading(true);
-
-        const token = localStorage.getItem('token'); // Lấy token tạm từ lúc login
-        if (!token) {
-            navigate('/login');
+        
+        // --- VALIDATION FRONTEND ---
+        if (newUsername.length < 3) {
+            setError("Tên đăng nhập quá ngắn (tối thiểu 3 ký tự)");
             return;
         }
 
+        if (newPassword.length < 6) {
+            setError("Mật khẩu phải có ít nhất 6 ký tự");
+            return;
+        }
+
+        if (newPassword !== confirmPassword) {
+            setError("Mật khẩu xác nhận không khớp!");
+            return;
+        }
+
+        setLoading(true);
+        setError('');
+
         try {
-            const response = await fetch('http://127.0.0.1:8000/api/users/set-username', {
+            const token = localStorage.getItem('token');
+            if (!token) {
+                setError("Phiên đăng nhập hết hạn. Vui lòng đăng nhập lại.");
+                setLoading(false);
+                return;
+            }
+
+            // Gửi cả username và password lên backend
+            const res = await fetch('http://127.0.0.1:8000/api/users/set-username', {
                 method: 'PUT',
                 headers: {
                     'Content-Type': 'application/json',
                     'Authorization': `Bearer ${token}`
                 },
-                body: JSON.stringify({ new_username: username })
+                body: JSON.stringify({ 
+                    new_username: newUsername,
+                    new_password: newPassword 
+                })
             });
 
-            const data = await response.json();
+            const data = await res.json();
 
-            if (response.ok) {
-                // QUAN TRỌNG: Lưu lại token mới (chứa username mới)
+            if (res.ok) {
+                // Cập nhật Token mới
                 localStorage.setItem('token', data.new_access_token);
                 
-                alert("Cập nhật tên người dùng thành công!");
-                navigate('/dashboard'); // Chuyển vào trang chủ
+                // Cập nhật User Info
+                try {
+                    const savedInfo = localStorage.getItem('user_info');
+                    if (savedInfo) {
+                        const parsed = JSON.parse(savedInfo);
+                        parsed.userName = data.new_username;
+                        localStorage.setItem('user_info', JSON.stringify(parsed));
+                    }
+                } catch (e) { console.log("Lỗi cache local"); }
+
+                alert("Thiết lập tài khoản thành công!");
+                navigate('/dashboard'); 
             } else {
-                setError(data.detail || "Có lỗi xảy ra, vui lòng thử lại.");
+                setError(data.detail || "Có lỗi xảy ra");
             }
         } catch (err) {
-            setError("Không thể kết nối đến server.");
+            setError("Lỗi kết nối Server");
         } finally {
-            setIsLoading(false);
+            setLoading(false);
         }
     };
 
     return (
-        <div style={styles.container}>
-            <div style={styles.card}>
-                <div style={styles.logoArea}>
-                    <img src="/logo.svg" alt="Logo" style={{width: '60px', marginBottom: '10px'}} />
-                    <h2 style={{margin: 0, color: '#007bff'}}>Hoàn tất hồ sơ</h2>
-                </div>
-                
-                <p style={styles.text}>
-                    Xin chào! Để sử dụng hệ thống, bạn cần tạo một <strong>Tên người dùng (Username)</strong> duy nhất. 
-                    Tên này sẽ được dùng làm định danh API của bạn.
+        <div className="login-box">
+            <div className="form-title">
+                <h3>Thiết lập Tài khoản</h3>
+                <p style={{ color: 'rgba(255,255,255,0.8)', fontSize: '0.9em', marginTop: '-15px' }}>
+                    Hoàn tất thông tin để bảo vệ tài khoản
                 </p>
+            </div>
 
-                <form onSubmit={handleSubmit} style={styles.form}>
-                    <div style={{textAlign: 'left', width: '100%', marginBottom: '5px'}}>
-                        <label style={{fontSize: '14px', fontWeight: 'bold', color: '#555'}}>Tên người dùng mong muốn:</label>
+            <form onSubmit={handleUpdate}>
+                {error && (
+                    <div style={{ 
+                        color: '#ff6b6b', 
+                        fontWeight: 'bold', 
+                        marginBottom: '15px', 
+                        fontSize: '0.9em',
+                        display: 'flex', 
+                        alignItems: 'center', 
+                        justifyContent: 'center',
+                        gap: '5px' 
+                    }}>
+                        <FaExclamationCircle /> {error}
                     </div>
+                )}
+
+                {/* 1. INPUT USERNAME */}
+                <div className="input-group">
+                    <FaUser className="icon" />
                     <input 
                         type="text" 
-                        placeholder="Ví dụ: nguyenvanan123" 
-                        value={username}
-                        onChange={(e) => setUsername(e.target.value.trim())}
-                        style={styles.input}
+                        placeholder="Tên hiển thị (Username)" 
+                        value={newUsername}
+                        onChange={(e) => setNewUsername(e.target.value)}
                         required
-                        minLength={3}
                     />
-                    
-                    {error && <div style={styles.error}>{error}</div>}
+                </div>
 
-                    <button type="submit" style={styles.button} disabled={isLoading}>
-                        {isLoading ? 'Đang xử lý...' : 'Xác nhận & Truy cập'}
-                    </button>
-                </form>
+                {/* 2. INPUT PASSWORD */}
+                <div className="input-group">
+                    <FaLock className="icon" />
+                    <input 
+                        type="password" 
+                        placeholder="Tạo mật khẩu mới" 
+                        value={newPassword}
+                        onChange={(e) => setNewPassword(e.target.value)}
+                        required
+                    />
+                </div>
+
+                {/* 3. INPUT CONFIRM PASSWORD */}
+                <div className="input-group">
+                    <FaLock className="icon" />
+                    <input 
+                        type="password" 
+                        placeholder="Xác nhận mật khẩu" 
+                        value={confirmPassword}
+                        onChange={(e) => setConfirmPassword(e.target.value)}
+                        required
+                    />
+                </div>
+
+                <button type="submit" disabled={loading} style={{opacity: loading ? 0.7 : 1}}>
+                    {loading ? 'Đang xử lý...' : (
+                        <span style={{display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px'}}>
+                             Hoàn tất <FaCheckCircle />
+                        </span>
+                    )}
+                </button>
+            </form>
+
+            <div className="register-section">
+                <span 
+                    className="register-link" 
+                    style={{cursor: 'pointer'}}
+                    onClick={() => {
+                        localStorage.clear();
+                        navigate('/login');
+                    }}
+                >
+                    Quay lại Đăng nhập
+                </span>
             </div>
         </div>
     );
-};
-
-const styles: { [key: string]: React.CSSProperties } = {
-    container: { display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', backgroundColor: '#f4f6f9', fontFamily: "'Segoe UI', sans-serif" },
-    card: { backgroundColor: 'white', padding: '40px', borderRadius: '16px', boxShadow: '0 4px 20px rgba(0,0,0,0.05)', width: '400px', textAlign: 'center' },
-    logoArea: { display: 'flex', flexDirection: 'column', alignItems: 'center', marginBottom: '20px' },
-    text: { color: '#666', fontSize: '15px', lineHeight: '1.5', marginBottom: '30px' },
-    form: { display: 'flex', flexDirection: 'column', alignItems: 'center' },
-    input: { width: '100%', padding: '12px', marginBottom: '15px', borderRadius: '8px', border: '1px solid #ddd', fontSize: '16px', boxSizing: 'border-box' },
-    button: { width: '100%', padding: '12px', backgroundColor: '#007bff', color: 'white', border: 'none', borderRadius: '8px', fontSize: '16px', fontWeight: 'bold', cursor: 'pointer', transition: '0.2s' },
-    error: { color: '#dc3545', fontSize: '14px', marginBottom: '15px', backgroundColor: '#ffeaea', padding: '10px', borderRadius: '5px', width: '100%' }
 };
 
 export default SetUsername;

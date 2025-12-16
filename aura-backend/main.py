@@ -406,6 +406,10 @@ class RegisterRequest(BaseModel):
 class GoogleLoginRequest(BaseModel):
     token: str
 
+class FacebookLoginRequest(BaseModel):
+    accessToken: str
+    userID: str
+
 class UserProfileUpdate(BaseModel):
     email: str = None
     phone: str = None
@@ -419,6 +423,7 @@ class UserProfileUpdate(BaseModel):
 
 class UpdateUsernameRequest(BaseModel):
     new_username: str
+    new_password: str = None # Thêm trường password (optional)
 
 class AssignDoctorRequest(BaseModel):
     patient_id: str
@@ -622,17 +627,113 @@ async def google_login(data: GoogleLoginRequest):
     access_token = create_access_token(token_data)
     return {"message": "Đăng nhập Google thành công", "access_token": access_token, "token_type": "bearer", "user_info": {"userName": user["userName"], "role": user.get("role", "USER"), "email": user.get("email")}, "is_new_user": is_new_user}
 
+@app.post("/api/facebook-login")
+async def facebook_login(data: FacebookLoginRequest):
+    # 1. Gọi sang Facebook để lấy thông tin người dùng từ token
+    fb_url = f"https://graph.facebook.com/me?fields=id,name,email,picture&access_token={data.accessToken}"
+    
+    try:
+        fb_response = requests.get(fb_url)
+        fb_data = fb_response.json()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail="Không thể kết nối tới Facebook")
+
+    if "error" in fb_data:
+        raise HTTPException(status_code=400, detail="Token Facebook không hợp lệ hoặc đã hết hạn")
+
+    # 2. Lấy thông tin
+    email = fb_data.get("email")
+    name = fb_data.get("name", "Facebook User")
+    fb_id = fb_data.get("id")
+
+    # Lưu ý: Một số acc Facebook đăng ký bằng SĐT sẽ không có email.
+    # Ta sẽ dùng userID làm username thay thế nếu không có email.
+    if not email:
+        email = f"{fb_id}@facebook.com" # Email giả lập để hệ thống không lỗi
+
+    # 3. Tìm hoặc Tạo User trong DB
+    user = await users_collection.find_one({"email": email})
+    is_new_user = False
+
+    if not user:
+        # Nếu chưa có -> Tạo mới
+        new_user = {
+            "userName": email, 
+            "email": email,
+            "password": "", # Không cần pass
+            "role": "USER",
+            "auth_provider": "facebook",
+            "full_name": name,
+            "created_at": datetime.utcnow(),
+            "avatar": fb_data.get("picture", {}).get("data", {}).get("url")
+        }
+        result = await users_collection.insert_one(new_user)
+        user = new_user
+        user["_id"] = result.inserted_id
+        is_new_user = True
+    else:
+        # Nếu đã có -> Cập nhật thông tin nếu cần
+        if user.get("userName") == email:
+            is_new_user = True # Đánh dấu để frontend biết (tùy logic)
+
+    # 4. Tạo Token nội bộ (AURA Token)
+    token_data = {"sub": user["userName"], "role": user.get("role", "USER")}
+    access_token = create_access_token(token_data)
+
+    return {
+        "message": "Đăng nhập Facebook thành công",
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user_info": {
+            "userName": user["userName"],
+            "role": user.get("role", "USER"),
+            "email": user.get("email"),
+            "full_name": user.get("full_name")
+        },
+        "is_new_user": is_new_user
+    }
+
 @app.put("/api/users/set-username")
 async def set_username(data: UpdateUsernameRequest, current_user: dict = Depends(get_current_user)):
     user_id = current_user["id"]
     new_username = data.new_username.strip()
-    if len(new_username) < 3: raise HTTPException(status_code=400, detail="Tên quá ngắn")
-    existing_user = await users_collection.find_one({"userName": new_username})
-    if existing_user: raise HTTPException(status_code=400, detail="Tên đã tồn tại")
-    await users_collection.update_one({"_id": ObjectId(user_id)}, {"$set": {"userName": new_username}})
+    
+    # Validate Username
+    if len(new_username) < 3: 
+        raise HTTPException(status_code=400, detail="Tên quá ngắn")
+    
+    # Kiểm tra trùng tên (trừ chính mình ra)
+    existing_user = await users_collection.find_one({
+        "userName": new_username, 
+        "_id": {"$ne": ObjectId(user_id)}
+    })
+    if existing_user: 
+        raise HTTPException(status_code=400, detail="Tên đã tồn tại")
+
+    # Chuẩn bị dữ liệu update
+    update_data = {"userName": new_username}
+
+    # Validate & Hash Password (Nếu có gửi lên)
+    if data.new_password:
+        if len(data.new_password) < 6:
+            raise HTTPException(status_code=400, detail="Mật khẩu phải từ 6 ký tự trở lên")
+        
+        # Mã hóa mật khẩu
+        hashed_password = bcrypt.hashpw(data.new_password.encode('utf-8'), bcrypt.gensalt())
+        update_data["password"] = hashed_password.decode('utf-8')
+
+    # Thực hiện update vào DB
+    await users_collection.update_one({"_id": ObjectId(user_id)}, {"$set": update_data})
+    
+    # Tạo token mới với tên mới
     new_token_data = {"sub": new_username, "role": current_user["role"]}
     new_access_token = create_access_token(new_token_data)
-    return {"message": "Cập nhật thành công", "new_access_token": new_access_token, "new_username": new_username}
+    
+    return {
+        "message": "Cập nhật thành công", 
+        "new_access_token": new_access_token, 
+        "new_username": new_username
+    }
 
 @app.put("/api/users/profile")
 async def update_user_profile(data: UserProfileUpdate, current_user: dict = Depends(get_current_user)):

@@ -22,7 +22,7 @@ body {
   padding: 0;
   box-sizing: border-box;
   font-family:  'Poppins', sans-serif;
-  color: #fff; /* Đặt màu chữ mặc định trong body là trắng */
+  color: #000000; /* Đặt màu chữ mặc định trong body là trắng */
 }
 
 /* ========================================================= */
