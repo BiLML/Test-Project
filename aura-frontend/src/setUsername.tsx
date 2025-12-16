@@ -88,9 +88,9 @@ const SetUsername = () => {
     return (
         <div className="login-box">
             <div className="form-title">
-                <h3>Thiết lập Tài khoản</h3>
+                <h3> Setup an account </h3>
                 <p style={{ color: 'rgba(255,255,255,0.8)', fontSize: '0.9em', marginTop: '-15px' }}>
-                    Hoàn tất thông tin để bảo vệ tài khoản
+                    Complete your account setup by choosing a username and password. 
                 </p>
             </div>
 
@@ -115,7 +115,7 @@ const SetUsername = () => {
                     <FaUser className="icon" />
                     <input 
                         type="text" 
-                        placeholder="Tên hiển thị (Username)" 
+                        placeholder="Username" 
                         value={newUsername}
                         onChange={(e) => setNewUsername(e.target.value)}
                         required
@@ -127,7 +127,7 @@ const SetUsername = () => {
                     <FaLock className="icon" />
                     <input 
                         type="password" 
-                        placeholder="Tạo mật khẩu mới" 
+                        placeholder="Password" 
                         value={newPassword}
                         onChange={(e) => setNewPassword(e.target.value)}
                         required
@@ -139,7 +139,7 @@ const SetUsername = () => {
                     <FaLock className="icon" />
                     <input 
                         type="password" 
-                        placeholder="Xác nhận mật khẩu" 
+                        placeholder="Confirm Password" 
                         value={confirmPassword}
                         onChange={(e) => setConfirmPassword(e.target.value)}
                         required
@@ -149,7 +149,7 @@ const SetUsername = () => {
                 <button type="submit" disabled={loading} style={{opacity: loading ? 0.7 : 1}}>
                     {loading ? 'Đang xử lý...' : (
                         <span style={{display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px'}}>
-                             Hoàn tất <FaCheckCircle />
+                             Submit <FaCheckCircle />
                         </span>
                     )}
                 </button>
@@ -164,7 +164,7 @@ const SetUsername = () => {
                         navigate('/login');
                     }}
                 >
-                    Quay lại Đăng nhập
+                    Back to Login
                 </span>
             </div>
         </div>

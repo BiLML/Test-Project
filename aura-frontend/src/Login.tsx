@@ -98,7 +98,7 @@ const Login = () => {
     return (
         <div className="login-box">
             <div className="form-title">
-                <h3>AURA LOGIN</h3>
+                <h3>Login</h3>
             </div>
             
             <form onSubmit={handleLogin}>
@@ -141,9 +141,9 @@ const Login = () => {
                     </div>
                 </div>
 
-                <button type="submit">LOGIN</button>
+                <button type="submit">Login</button>
                 
-                <div className="divider">OR</div>
+                <div className="divider">Or</div>
                 
                 {/* NÚT GOOGLE */}
                 <button 
@@ -157,7 +157,7 @@ const Login = () => {
                 {/* NÚT FACEBOOK (ĐÃ TÍCH HỢP) */}
                 <div style={{width: '100%', display: 'flex', justifyContent: 'center'}}>
                     <FacebookLogin
-                        appId="1874060756652806"  // <--- ⚠️ DÁN APP ID CỦA BẠN VÀO ĐÂY
+                        appId="836034659202730"  // <--- ⚠️ DÁN APP ID CỦA BẠN VÀO ĐÂY
                         onSuccess={handleFacebookResponse}
                         onFail={(error) => console.log('Login Failed!', error)}
                         style={{
@@ -165,7 +165,7 @@ const Login = () => {
                             padding: '15px',
                             marginBottom: '15px',
                             borderRadius: '4rem',
-                            fontWeight: '600',
+                            fontWeight: 'bold',
                             cursor: 'pointer',
                             display: 'flex',
                             alignItems: 'center',
@@ -173,7 +173,7 @@ const Login = () => {
                             backgroundColor: '#1877f2', // Màu xanh Facebook chuẩn
                             color: 'white',
                             border: 'none',
-                            fontSize: '1em',
+                            fontSize: '0.83em',
                             transition: 'opacity 0.2s'
                         }}
                         // Style khi hover (thư viện hỗ trợ prop style nhưng hover thì CSS class tốt hơn, tạm thời dùng style inline)
