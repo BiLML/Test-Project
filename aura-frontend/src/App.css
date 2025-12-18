@@ -8,26 +8,14 @@
   display: flex;
   justify-content: center; 
   align-items: center;   
+  /* PHÔNG NỀN MÀU TÍM TƯƠNG ĐƯƠNG HÌNH ẢNH */
+  background-image: url('login-bg.jpg'); 
+  background-size: cover;
+  background-position: center;
+  background-color: #6a5acd; /* Màu dự phòng nếu không tải được ảnh */
   margin: 0;
   padding: 0;
   overflow: hidden; 
-  transition: background-image 1s ease-in-out; /* Hiệu ứng chuyển nền mượt */
-}
-
-/* Class cho buổi sáng */
-.bg-morning {
-  background-image: url('/bg-morning.jpg'); 
-  background-size: cover;
-  background-position: center;
-  background-color: #87CEEB; /* Màu xanh da trời dự phòng */
-}
-
-/* Class cho buổi tối */
-.bg-night {
-  background-image: url('/bg-morning.jpg'); 
-  background-size: cover;
-  background-position: center;
-  background-color: #2c3e50; /* Màu xanh đen dự phòng */
 }
 body {
   margin: 0;

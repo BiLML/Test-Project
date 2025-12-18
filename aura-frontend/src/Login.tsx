@@ -1,9 +1,8 @@
-import React, { useState, useEffect} from 'react';
+import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useGoogleLogin } from '@react-oauth/google';
 import FacebookLogin from '@greatsumini/react-facebook-login'; // Import thư viện Facebook
 import './App.css';
-
 
 const Login = () => {
     const [userName, setUserName] = useState('');
@@ -12,30 +11,6 @@ const Login = () => {
     const [error, setError] = useState('');
     
     const navigate = useNavigate();
-    
-    useEffect(() => {
-        const updateBackground = () => {
-            const hour = new Date().getHours();
-            const rootElement = document.getElementById('root');
-            
-            if (!rootElement) return;
-
-            // Quy định: 6h sáng đến 18h chiều là buổi sáng
-            if (hour >= 6 && hour < 18) {
-                rootElement.classList.add('bg-morning');
-                rootElement.classList.remove('bg-morningt');
-            } else {
-                rootElement.classList.add('bg-morning');
-                rootElement.classList.remove('bg-morning');
-            }
-        };
-
-        updateBackground();
-        
-        // (Tùy chọn) Kiểm tra lại mỗi phút để cập nhật nếu người dùng treo máy qua khung giờ chuyển giao
-        const interval = setInterval(updateBackground, 60000);
-        return () => clearInterval(interval);
-    }, []);
 
     // --- 1. XỬ LÝ SAU KHI ĐĂNG NHẬP THÀNH CÔNG (Dùng chung cho cả Google, Facebook, Thường) ---
     const handleLoginSuccess = (data: any) => {

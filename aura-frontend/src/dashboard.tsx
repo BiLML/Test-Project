@@ -8,7 +8,7 @@ const Dashboard: React.FC = () => {
     // --- STATE ---
     const [userRole, setUserRole] = useState<string>('Guest');
     const [userName, setUserName] = useState<string>('');
-    const [_id, setUserId] = useState<string>('');
+    const [userId, setUserId] = useState<string>('');
     const [isLoading, setIsLoading] = useState(true); 
     const [historyData, setHistoryData] = useState<any[]>([]);
     
