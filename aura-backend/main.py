@@ -391,7 +391,8 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
         "weight": user.get("weight", ""),
         "gender": user.get("gender", ""),
         "nationality": user.get("nationality", ""),
-        "assigned_doctor_id": user.get("assigned_doctor_id", None)
+        "assigned_doctor_id": user.get("assigned_doctor_id", None),
+        "full_name": user.get("full_name", "")
     }
 
 # --- MODELS ---
@@ -421,6 +422,7 @@ class UserProfileUpdate(BaseModel):
     weight: str = None
     gender: str = None
     nationality: str = None
+    full_name: str = None
 
 class UpdateUsernameRequest(BaseModel):
     new_username: str
@@ -894,6 +896,7 @@ async def get_chats(current_user: dict = Depends(get_current_user)):
             "unread_count": unread
         }
 
+
     # 1. Nếu là Bệnh nhân -> Lấy Bác sĩ phụ trách
     if role == "USER":
         assigned_doc_id = current_user.get("assigned_doctor_id")
@@ -901,8 +904,24 @@ async def get_chats(current_user: dict = Depends(get_current_user)):
             try:
                 doctor = await users_collection.find_one({"_id": ObjectId(assigned_doc_id)})
                 if doctor:
-                    chat_info = await get_chat_info(str(doctor["_id"]), f"BS. {doctor['userName']}")
+                    # Logic: Kiểm tra xem bác sĩ có field "full_name" không
+                    doc_real_name = doctor.get("full_name")
+                    
+                    if doc_real_name:
+                        # Nếu có tên thật (VD: Đỗ Đạt) -> hiển thị "BS. Đỗ Đạt"
+                        display_name = f"BS. {doc_real_name}"
+                    else:
+                        # Nếu chưa cập nhật tên thật -> dùng tạm userName cũ
+                        display_name = f"BS. {doctor['userName']}"
+
+                    # Gọi hàm lấy thông tin chat với tên hiển thị mới
+                    chat_info = await get_chat_info(str(doctor["_id"]), display_name)
+                    
+                    # (Tùy chọn) Gửi kèm trường full_name gốc để Frontend dùng nếu cần logic riêng
+                    chat_info['full_name'] = doc_real_name if doc_real_name else ""
+                    
                     chats.append(chat_info)
+                    # -------------------
             except Exception as e: print(f"Lỗi lấy chat user: {e}")
 
     # 2. Nếu là Bác sĩ -> Lấy danh sách bệnh nhân

@@ -9,7 +9,7 @@ const Dashboard: React.FC = () => {
     // --- STATE DỮ LIỆU ---
     const [userRole, setUserRole] = useState<string>('Guest');
     const [userName, setUserName] = useState<string>('');
-    const [userId, setUserId] = useState<string>('');
+    const [_id, setUserId] = useState<string>('');
     const [isLoading, setIsLoading] = useState(true); 
     const [historyData, setHistoryData] = useState<any[]>([]);
     const [chatData, setChatData] = useState<any[]>([]); 
@@ -240,13 +240,16 @@ const Dashboard: React.FC = () => {
                             {chatData.map(msg => (
                                 <div key={msg.id} style={{...styles.chatListItem, backgroundColor: selectedChatId === msg.id ? '#ebf5ff' : 'transparent'}} onClick={() => openChat(msg.id)}>
                                     <div style={styles.avatarLarge}>
-                                        {msg.sender.charAt(0).toUpperCase()}
-                                        {/* ĐÃ XÓA CHẤM XANH Ở ĐÂY */}
-                                    </div>
-                                    <div style={{flex: 1, overflow: 'hidden'}}>
-                                        <div style={{display: 'flex', justifyContent: 'space-between'}}>
-                                            <span style={{fontWeight: msg.unread ? '800' : '500', fontSize: '15px', color: '#050505'}}>{msg.sender}</span>
-                                        </div>
+                                    {/* Lấy chữ cái đầu của full_name, nếu không có thì dùng sender */}
+                                    {(msg.full_name || msg.sender).charAt(0).toUpperCase()}
+                                </div>
+                                <div style={{flex: 1, overflow: 'hidden'}}>
+                                    <div style={{display: 'flex', justifyContent: 'space-between'}}>
+                                    {/* Hiển thị full_name */}
+                                    <span style={{fontWeight: msg.unread ? '800' : '500', fontSize: '15px', color: '#050505'}}>
+                                        {msg.full_name || msg.sender}
+                                    </span>
+                                </div>
                                         <div style={{display: 'flex', alignItems: 'center', gap: '5px'}}>
                                             <p style={{margin: 0, fontSize: '13px', color: msg.unread ? '#050505' : '#65676b', fontWeight: msg.unread ? 'bold' : 'normal', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'}}>
                                                 {msg.preview}
@@ -264,9 +267,13 @@ const Dashboard: React.FC = () => {
                         {selectedChatId ? (
                             <>
                                 <div style={styles.chatWindowHeader}>
-                                    <div style={styles.avatarMedium}>{currentPartner?.sender.charAt(0).toUpperCase()}</div>
+                                    <div style={styles.avatarMedium}>
+                                        {(currentPartner?.full_name || currentPartner?.sender || '').charAt(0).toUpperCase()}
+                                    </div>
                                     <div style={{flex: 1}}>
-                                        <h4 style={{margin: 0, fontSize: '16px'}}>{currentPartner?.sender}</h4>
+                                        <h4 style={{margin: 0, fontSize: '16px'}}>
+                                            {currentPartner?.full_name || currentPartner?.sender}
+                                        </h4>
                                         <span style={{fontSize: '12px', color: '#65676b'}}>
                                             {currentPartner?.id === 'system' ? 'Hệ thống' : 'Bác sĩ'}
                                         </span>

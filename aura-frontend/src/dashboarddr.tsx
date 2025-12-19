@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { FaPaperPlane, FaUserMd, FaUsers, FaClipboardList, FaCommentDots } from 'react-icons/fa';
+import ProfileDr from './ProfileDr';
 
 // --- Dashboard Component (Bác sĩ) ---
 const DashboardDr: React.FC = () => {
@@ -8,8 +9,9 @@ const DashboardDr: React.FC = () => {
 
     // --- STATE DỮ LIỆU ---
     const [userRole, setUserRole] = useState<string>('DOCTOR');
-    const [userName, setUserName] = useState<string>('');    
-    const [userId, setUserId] = useState<string>('');    
+    const [userName, setUserName] = useState<string>('');   
+    const [full_name, setFullName] = useState<string>(''); 
+    const [_id, setUserId] = useState<string>('');    
     const [isLoading, setIsLoading] = useState(true);
     
     // DỮ LIỆU TỪ API
@@ -177,6 +179,7 @@ const DashboardDr: React.FC = () => {
                 }
 
                 setUserName(userData.user_info.userName);
+                setFullName(userData.user_info.full_name || '');
                 setUserRole(userData.user_info.role);
                 setUserId(userData.user_info.id);
 
@@ -217,6 +220,11 @@ const DashboardDr: React.FC = () => {
         const newState = !showNotifications;
         setShowNotifications(newState);
         if (newState) setHasViewedNotifications(true);
+    };
+
+    const goToProfilePage = () => {
+        setShowUserMenu(false);
+        navigate('/profile-dr'); 
     };
     
     const goToReviewDetail = (recordId: string) => navigate(`/result/${recordId}`);
@@ -469,7 +477,7 @@ const DashboardDr: React.FC = () => {
             <main style={styles.main}>
                 <header style={styles.header}>
                     <div>
-                        <h2 style={{ margin: 0, color: 'white' }}>Chào mừng, {userName}!</h2>
+                        <h2 style={{ margin: 0, color: 'white' }}>Chào mừng, {full_name || userName}!</h2>
                         <p style={{ margin: '5px 0 0', color: '#cbd5e1', fontSize: '14px' }}>Bạn có <strong>{totalPending} hồ sơ</strong> cần xem xét ngay.</p>
                     </div>
                     <div style={styles.headerActions}>
@@ -486,8 +494,8 @@ const DashboardDr: React.FC = () => {
                             <div style={styles.avatar} onClick={toggleMenu}>{userName ? userName.charAt(0).toUpperCase() : 'D'}</div>
                             {showUserMenu && (
                                 <div style={styles.dropdownMenu}>
-                                    <div style={styles.dropdownHeader}><strong>BS. {userName}</strong><br/><small>{userRole}</small></div>
-                                    <button style={styles.dropdownItem} onClick={() => navigate('/profile')}>👤 Hồ sơ cá nhân</button>
+                                    <div style={styles.dropdownHeader}><strong>BS. {full_name|| userName}</strong><br/><small>{userRole}</small></div>
+                                    <button style={styles.dropdownItem} onClick={() => navigate('/profile-dr')}>👤 Hồ sơ cá nhân</button>
                                     <div style={{height: '1px', background: '#eee', margin: '5px 0'}}></div>
                                     <button style={{...styles.dropdownItem, color: '#dc3545'}} onClick={handleLogout}>🚪 Đăng xuất</button>
                                 </div>
