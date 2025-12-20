@@ -489,8 +489,13 @@ async def login(data: LoginRequest):
 @app.get("/api/users/me")
 async def read_users_me(current_user: dict = Depends(get_current_user)):
     return {
-        "message": "Đây là dữ liệu mật",
-        "user_info": current_user
+        "message": "Dữ liệu người dùng",
+        "user_info": {
+            "id": str(current_user.get("_id")),
+            "userName": current_user.get("userName"),
+            "full_name": current_user.get("full_name", ""), # Đảm bảo field này trùng với DB
+            "role": current_user.get("role", "PATIENT"),
+        }
     }
 
 # --- API UPLOAD ---
@@ -928,7 +933,9 @@ async def get_chats(current_user: dict = Depends(get_current_user)):
     elif role == "DOCTOR":
         patients = users_collection.find({"assigned_doctor_id": user_id})
         async for p in patients:
-            chat_info = await get_chat_info(str(p["_id"]), p["userName"])
+            display_name = p.get("full_name") or p.get("userName")
+            chat_info = await get_chat_info(str(p["_id"]), display_name)
+            chat_info["full_name"] = p.get("full_name", "")
             chats.append(chat_info)
 
     # Chat Hệ thống (Đổi ID thành "system" chuẩn)

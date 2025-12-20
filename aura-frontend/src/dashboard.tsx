@@ -13,6 +13,7 @@ const Dashboard: React.FC = () => {
     const [isLoading, setIsLoading] = useState(true); 
     const [historyData, setHistoryData] = useState<any[]>([]);
     const [chatData, setChatData] = useState<any[]>([]); 
+    const [full_name, setFullName] = useState<string>('');
 
     // --- STATE CHAT ---
     const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
@@ -174,6 +175,7 @@ const Dashboard: React.FC = () => {
                 setUserName(userData.user_info.userName);
                 setUserRole(userData.user_info.role);
                 setUserId(userData.user_info.id);
+                setFullName(userData.user_info.full_name || '');
                 await fetchMedicalRecords();
                 await fetchChatData(); 
             } catch (error) { console.error("Lỗi tải dữ liệu:", error); } 
@@ -361,7 +363,7 @@ const Dashboard: React.FC = () => {
             </aside>
             <main style={styles.main}>
                 <header style={styles.header}>
-                    <div><h2 style={{margin:0}}>Xin chào, {userName}!</h2></div>
+                    <div><h2 style={{margin:0}}>Xin chào, {full_name}!</h2></div>
                     <div style={styles.headerActions}>
                         <div style={{position:'relative'}} ref={notificationRef}>
                             <button style={styles.bellBtn} onClick={toggleNotifications}>🔔 {showRedDot && <span style={styles.bellBadge}></span>}</button>
@@ -378,7 +380,7 @@ const Dashboard: React.FC = () => {
                             {showUserMenu && (
                                 <div style={styles.dropdownMenu}>
                                     <div style={styles.dropdownHeader}>
-                                        <strong>{userName}</strong><br/><small>{userRole}</small>
+                                        <strong>{full_name}</strong><br/><small>{userRole}</small>
                                     </div>
                                     <button style={styles.dropdownItem} onClick={goToProfilePage}>👤 Hồ sơ cá nhân</button>
                                     <div style={{height: '1px', background: '#eee', margin: '5px 0'}}></div>

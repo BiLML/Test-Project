@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { BiFullscreen } from 'react-icons/bi';
 import { useNavigate } from 'react-router-dom';
 
 // Định nghĩa kiểu dữ liệu Profile mới
@@ -13,6 +14,7 @@ interface ProfileState {
     weight: string; 
     gender: string; 
     nationality: string; 
+    full_name: string;
 }
 
 const ProfilePage: React.FC = () => {
@@ -30,7 +32,8 @@ const ProfilePage: React.FC = () => {
         height: '',
         weight: '',
         gender: '',
-        nationality: ''
+        nationality: '',
+        full_name:''
     });
     const [isSaving, setIsSaving] = useState(false);
     const [isLoading, setIsLoading] = useState(true);
@@ -67,7 +70,9 @@ const ProfilePage: React.FC = () => {
                     height: info.height || '',
                     weight: info.weight || '',
                     gender: info.gender || '',
-                    nationality: info.nationality || ''
+                    nationality: info.nationality || '',
+                    full_name: info.full_name || ''
+
                 });
 
             } catch (error) {
@@ -134,7 +139,7 @@ const ProfilePage: React.FC = () => {
                 
                 <div style={styles.userSummary}>
                     <div style={styles.avatar}>{userName.charAt(0).toUpperCase()}</div>
-                    <h3>{userName}</h3>
+                    <h3>{profileData.full_name}</h3>
                     <p style={{color: '#666'}}>Quản lý thông tin chi tiết</p>
                 </div>
 
@@ -143,6 +148,10 @@ const ProfilePage: React.FC = () => {
                     <div style={styles.formGroup}>
                         <label style={styles.label}>Tên đăng nhập</label>
                         <input type="text" value={userName} style={{...styles.input, backgroundColor: '#f0f0f0', cursor: 'not-allowed'}} disabled />
+                    </div>
+                    <div style={styles.formGroup}>
+                        <label style={styles.label}>Họ và tên</label>
+                        <input type="text" name="full_name" value={profileData.full_name} onChange={handleProfileChange} style={styles.input} placeholder="VD: Nguyễn Văn A" />
                     </div>
                     <div style={styles.formGroup}>
                         <label style={styles.label}>Email</label>

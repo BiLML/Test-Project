@@ -36,37 +36,44 @@ const DashboardDr: React.FC = () => {
 
     // --- 1. HÀM TẢI DANH SÁCH CHAT (QUAN TRỌNG: ĐÃ THÊM LOGIC MERGE) ---
     const fetchChatData = useCallback(async (token: string) => {
-        try {
-            const res = await fetch('http://127.0.0.1:8000/api/chats', {
-                headers: { 'Authorization': `Bearer ${token}` }
+    try {
+        const res = await fetch('http://127.0.0.1:8000/api/chats', {
+            headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (res.ok) {
+            const data = await res.json();
+            const serverChats = data.chats;
+
+            // Mapping tên thật từ danh sách bệnh nhân
+            const enrichedChats = serverChats.map((sChat: any) => {
+                // Tìm bệnh nhân có ID khớp với ID của cuộc hội thoại
+                const patient = patientsData.find(p => p.id === sChat.id);
+                return {
+                    ...sChat,
+                    // Ưu tiên hiển thị full_name từ backend, sau đó đến full_name trong patientsData, 
+                    // cuối cùng mới dùng sender (userName)
+                    display_name: sChat.full_name || patient?.full_name || patient?.userName || sChat.sender 
+                };
             });
-            if (res.ok) {
-                const data = await res.json();
-                const serverChats = data.chats;
 
-                // --- LOGIC GIỮ TIN NHẮN "VỪA XONG" (GIỐNG BÊN USER) ---
-                setChatData(prevChats => {
-                    const prevMap = new Map(prevChats.map((c: any) => [c.id, c]));
-                    
-                    const mergedChats = serverChats.map((sChat: any) => {
-                        const pChat: any = prevMap.get(sChat.id);
-                        // Nếu local đang có tin "Vừa xong" mà server chưa có tin mới hơn -> Giữ nguyên local
-                        if (pChat && pChat.time === "Vừa xong" && sChat.preview !== pChat.preview) {
-                            return pChat; 
-                        }
-                        return sChat;
-                    });
-
-                    return mergedChats.sort((a: any, b: any) => {
-                        if (a.time === "Vừa xong") return -1;
-                        if (b.time === "Vừa xong") return 1;
-                        return (b.time || "").localeCompare(a.time || ""); 
-                    });
+            setChatData(prevChats => {
+                const prevMap = new Map(prevChats.map((c: any) => [c.id, c]));
+                const mergedChats = enrichedChats.map((sChat: any) => {
+                    const pChat: any = prevMap.get(sChat.id);
+                    if (pChat && pChat.time === "Vừa xong" && sChat.preview !== pChat.preview) {
+                        return pChat; 
+                    }
+                    return sChat;
                 });
-                // -----------------------------------------------------
-            }
-        } catch (error) { console.error("Lỗi chat:", error); }
-    }, []);
+                return mergedChats.sort((a: any, b: any) => {
+                    if (a.time === "Vừa xong") return -1;
+                    if (b.time === "Vừa xong") return 1;
+                    return (b.time || "").localeCompare(a.time || ""); 
+                });
+            });
+        }
+    } catch (error) { console.error("Lỗi chat:", error); }
+}, [patientsData]);
 
     // --- 2. HÀM TẢI LỊCH SỬ TIN NHẮN ---
     const fetchMessageHistory = async (partnerId: string) => {
@@ -237,7 +244,7 @@ const DashboardDr: React.FC = () => {
                      (p.latest_scan.result.includes('Nặng') || p.latest_scan.result.includes('Tăng sinh') || p.latest_scan.result.includes('Trung bình')))
         .map(p => ({
             id: p.latest_scan.record_id || '',
-            patientName: p.userName,
+            patientName: p.full_name || p.userName,
             date: p.latest_scan.date,
             aiResult: p.latest_scan.result,
             status: 'Chờ Bác sĩ',
@@ -267,23 +274,26 @@ const DashboardDr: React.FC = () => {
                             <h2 style={{margin: 0, fontSize: '20px', color: '#333'}}>Chat Tư Vấn</h2>
                         </div>
                         <div style={styles.chatListScroll}>
-                            {chatData.map(msg => (
-                                <div key={msg.id} style={{...styles.chatListItem, backgroundColor: selectedChatId === msg.id ? '#ebf5ff' : 'transparent'}} onClick={() => openChat(msg.id)}>
+                            {chatData.map((chat) => (
+                                <div key={chat.id} style={{...styles.chatListItem, backgroundColor: selectedChatId === chat.id ? '#ebf5ff' : 'transparent'}} 
+                                onClick={() => openChat(chat.id)}>
                                     <div style={styles.avatarLarge}>
-                                        {msg.sender.charAt(0).toUpperCase()}
+                                        {(chat.display_name || chat.full_name || chat.sender || 'U').charAt(0).toUpperCase()}
                                     </div>
                                     <div style={{flex: 1, overflow: 'hidden'}}>
                                         <div style={{display: 'flex', justifyContent: 'space-between'}}>
-                                            <span style={{fontWeight: msg.unread ? '800' : '500', fontSize: '15px', color: '#050505'}}>{msg.sender}</span>
+                                            <span style={{fontWeight: chat.unread ? '800' : '500', fontSize: '15px', color: '#050505'}}>
+                                                {chat.full_name || chat.sender}
+                                            </span>
                                         </div>
                                         <div style={{display: 'flex', alignItems: 'center', gap: '5px'}}>
-                                            <p style={{margin: 0, fontSize: '13px', color: msg.unread ? '#050505' : '#65676b', fontWeight: msg.unread ? 'bold' : 'normal', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'}}>
-                                                {msg.preview}
+                                            <p style={{margin: 0, fontSize: '13px', color: chat.unread ? '#050505' : '#65676b', fontWeight: chat.unread ? 'bold' : 'normal', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'}}>
+                                                {chat.preview}
                                             </p>
-                                            <span style={{fontSize: '11px', color: '#65676b'}}>• {msg.time}</span>
+                                            <span style={{fontSize: '11px', color: '#65676b'}}>• {chat.time}</span>
                                         </div>
                                     </div>
-                                    {msg.unread && <div style={styles.unreadRedDot}></div>}
+                                    {chat.unread && <div style={styles.unreadRedDot}></div>}
                                 </div>
                             ))}
                         </div>
@@ -293,9 +303,13 @@ const DashboardDr: React.FC = () => {
                         {selectedChatId ? (
                             <>
                                 <div style={styles.chatWindowHeader}>
-                                    <div style={styles.avatarMedium}>{currentPartner?.sender.charAt(0).toUpperCase()}</div>
+                                    <div style={styles.avatarMedium}>
+                                        {(currentPartner?.full_name || currentPartner?.sender || '').charAt(0).toUpperCase()}
+                                    </div>
                                     <div style={{flex: 1}}>
-                                        <h4 style={{margin: 0, fontSize: '16px', color: '#333'}}>{currentPartner?.sender}</h4>
+                                        <h4 style={{margin: 0, fontSize: '16px'}}>
+                                            {currentPartner?.full_name || currentPartner?.sender}
+                                        </h4>
                                         <span style={{fontSize: '12px', color: '#65676b'}}>
                                             {currentPartner?.id === 'system' ? 'Hệ thống' : 'Bệnh nhân'}
                                         </span>
@@ -304,7 +318,11 @@ const DashboardDr: React.FC = () => {
                                 <div style={styles.messagesBody}>
                                     {currentMessages.map((msg, idx) => (
                                         <div key={idx} style={{display: 'flex', justifyContent: msg.is_me ? 'flex-end' : 'flex-start', marginBottom: '10px'}}>
-                                            {!msg.is_me && <div style={styles.avatarSmall}>{currentPartner?.sender.charAt(0).toUpperCase()}</div>}
+                                            {!msg.is_me && (
+                                                <div style={styles.avatarSmall}>
+                                                    {(currentPartner?.full_name || currentPartner?.display_name || currentPartner?.sender || 'P').charAt(0).toUpperCase()}
+                                                </div>
+                                            )}
                                             <div style={{
                                                 maxWidth: '65%', padding: '8px 12px', borderRadius: '18px', 
                                                 backgroundColor: msg.is_me ? '#0084ff' : '#e4e6eb', 
