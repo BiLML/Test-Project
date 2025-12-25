@@ -19,7 +19,7 @@ services:
     depends_on:
       - mongo_db
     environment:
-      - MONGO_URL=${MONGO_URL} # Sửa lại đúng biến trong code python của bạn
+      - MONGO_URL=mongodb://mongo_db:27017 # Sửa lại đúng biến trong code python của bạn
       # Các biến môi trường khác (copy từ .env của bạn vào đây hoặc dùng file .env)
       - SECRET_KEY=${SECRET_KEY}
       - CLOUDINARY_CLOUD_NAME=${CLOUDINARY_CLOUD_NAME}
