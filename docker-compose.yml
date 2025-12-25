@@ -1,0 +1,48 @@
+version: '3.8'
+
+services:
+  # Database
+  mongo_db:
+    image: mongo:6.0
+    container_name: aura_mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+
+  # Backend (Python + AI)
+  backend:
+    build: ./aura-backend
+    container_name: aura_backend
+    ports:
+      - "8000:8000"
+    depends_on:
+      - mongo_db
+    environment:
+      - MONGO_URL=${MONGO_URL} # Sửa lại đúng biến trong code python của bạn
+      # Các biến môi trường khác (copy từ .env của bạn vào đây hoặc dùng file .env)
+      - SECRET_KEY=${SECRET_KEY}
+      - CLOUDINARY_CLOUD_NAME=${CLOUDINARY_CLOUD_NAME}
+      - CLOUDINARY_API_KEY=${CLOUDINARY_API_KEY}
+      - CLOUDINARY_API_SECRET=${CLOUDINARY_API_SECRET}
+    volumes:
+      - ./aura-backend:/app
+      - /app/ai/__pycache__
+      - /app/server/__pycache__
+      # Quan trọng: Map model từ máy thật vào (nếu bạn không build model vào image)
+      # - ./aura-backend/ai:/app/ai 
+
+  # Frontend (React)
+  frontend:
+    build: ./aura-frontend
+    container_name: aura_frontend
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+    volumes:
+      - ./aura-frontend:/app
+      - /app/node_modules
+
+volumes:
+  mongo_data:

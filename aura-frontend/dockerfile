@@ -1,0 +1,19 @@
+# Bắt buộc dùng Node 20 (hoặc 22) cho React 19
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Copy package.json trước để tận dụng cache
+COPY package*.json ./
+
+# Cài đặt thư viện
+RUN npm install
+
+# Copy toàn bộ code
+COPY . .
+
+# Vite chạy port 5173
+EXPOSE 5173
+
+# Chạy chế độ Dev, mở host để máy ngoài truy cập được
+CMD ["npm", "run", "dev", "--", "--host"]

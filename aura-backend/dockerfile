@@ -1,0 +1,27 @@
+# Sử dụng Python 3.10 Slim để cân bằng giữa độ nhẹ và tính tương thích
+FROM python:3.10-slim
+
+# 1. Cài đặt thư viện hệ thống cần thiết cho OpenCV và các phép toán AI
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# 2. Copy file thư viện và cài đặt
+COPY requirements.txt .
+# Thêm --upgrade pip để đảm bảo pip xử lý được các gói wheel mới nhất
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+# 3. Copy code
+COPY . .
+
+# 4. Mở port
+EXPOSE 8000
+
+# 5. Chạy server (Đường dẫn dựa trên cấu trúc thư mục của bạn)
+CMD ["uvicorn", "server.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]

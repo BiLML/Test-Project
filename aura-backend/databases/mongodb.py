@@ -7,7 +7,7 @@ load_dotenv()
 
 class MongoDB:
     def __init__(self):
-        self.mongo_url = os.getenv("MONGO_URL", "mongodb://localhost:27017")
+        self.mongo_url = os.getenv("MONGO_URL", "mongodb://mongo_db:27017")
         self.client = None
         self.db = None
 

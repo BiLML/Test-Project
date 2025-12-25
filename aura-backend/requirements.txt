@@ -1,0 +1,23 @@
+# --- Core Server ---
+fastapi==0.124.0
+uvicorn==0.38.0
+python-multipart==0.0.20  # Để upload ảnh
+python-dotenv==1.2.1      # Đọc biến môi trường
+requests==2.32.5          # Gọi API Google/Facebook
+
+# --- Database ---
+motor==3.7.1              # MongoDB Async
+pymongo==4.15.5
+
+# --- Auth & Security ---
+python-jose==3.5.0        # JWT Token
+bcrypt==5.0.0             # Hash mật khẩu (Bạn có cài bcrypt 5.0.0)
+passlib==1.7.4            # Hỗ trợ check password
+
+# --- AI & Image Processing ---
+tensorflow==2.20.0        # Bản mới nhất bạn đang dùng
+keras==3.12.0
+numpy==2.2.6              # Numpy bản mới (2.x)
+opencv-python-headless==4.12.0.88 # Bản nhẹ cho Server (không cần GUI)
+pillow==12.0.0            # Xử lý ảnh
+cloudinary==1.44.1        # Upload cloud
