@@ -204,7 +204,7 @@ const DashboardDr: React.FC = () => {
             finally { setIsLoading(false); }
         };
         initData();
-    }, [navigate, fetchChatData]);
+    }, []);
 
     useEffect(() => {
         const handleClickOutside = (event: MouseEvent) => {

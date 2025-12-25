@@ -37,3 +37,7 @@ Thumbs.db
 .vscode/
 .idea/
 '@ | Out-File -Encoding UTF8 .gitignore
+
+# --- BACKUPS ---
+backups/
+dump/
