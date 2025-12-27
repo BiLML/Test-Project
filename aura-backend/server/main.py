@@ -1,11 +1,12 @@
 # aura-backend/main.py
 import os
 import io
-import cv2
-import bcrypt
-import requests
-from dotenv import load_dotenv
+import requests # type: ignore
 from datetime import datetime, timedelta
+import uuid
+
+# --- THIRD PARTY LIBS ---
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Depends, status, File, UploadFile, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer
@@ -13,21 +14,35 @@ from jose import JWTError, jwt
 import cloudinary
 import cloudinary.uploader
 from bson.objectid import ObjectId
+from pydantic import BaseModel, EmailStr
+import cv2 
+import bcrypt
 
-# --- IMPORT MODULES CỦA DỰ ÁN (STRUCTURE MỚI) ---
-from databases import db, init_db  # Import DB từ folder databases
-from ai.inference import run_aura_inference # Import logic AI từ folder ai
-from models import User, UserProfile, Message, Payment # Import Models Pydantic
-# ------------------------------------------------
+# --- IMPORT MODULES CỦA DỰ ÁN ---
+from databases import db, init_db
+from ai.inference import run_aura_inference
+from models import User, UserProfile, Message 
 
+# Import thư viện gửi mail
+from fastapi_mail import FastMail, MessageSchema, ConnectionConfig, MessageType
 
+# --- CẤU HÌNH ---
 load_dotenv()
 app = FastAPI()
 
-@app.on_event("startup")
-async def startup_event():
-    # Gọi hàm init giống hệt thầy
-    await init_db()
+# --- CẤU HÌNH GỬI MAIL (Chỉ khai báo 1 lần ở đây) ---
+conf = ConnectionConfig(
+    MAIL_USERNAME = os.getenv("MAIL_USERNAME"),
+    MAIL_PASSWORD = os.getenv("MAIL_PASSWORD"),
+    MAIL_FROM = os.getenv("MAIL_FROM"),
+    MAIL_PORT = 587,
+    MAIL_SERVER = "smtp.gmail.com",
+    MAIL_STARTTLS = True,
+    MAIL_SSL_TLS = False,
+    USE_CREDENTIALS = True,
+    VALIDATE_CERTS = True
+)
+
 # Cấu hình CORS
 app.add_middleware(
     CORSMiddleware,
@@ -37,7 +52,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# KẾT NỐI DATABASE (Lấy từ module databases)
+@app.on_event("startup")
+async def startup_event():
+    await init_db()
+
+# KẾT NỐI DATABASE
 users_collection = db.users
 medical_records_collection = db.medical_records
 messages_collection = db.messages
@@ -45,9 +64,8 @@ messages_collection = db.messages
 # Cấu hình Bảo mật
 SECRET_KEY = os.getenv("SECRET_KEY")
 if not SECRET_KEY:
-    # Khi chạy local có thể tạm chấp nhận, nhưng cẩn thận
-    print("⚠️ CẢNH BÁO: Đang dùng SECRET_KEY không an toàn!") 
-    SECRET_KEY = "secret_mac_dinh"
+    print("⚠️ CẢNH BÁO: Đang dùng SECRET_KEY mặc định!") 
+    SECRET_KEY = "secret_mac_dinh_aura_project"
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 30))
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/login")
@@ -60,20 +78,23 @@ cloudinary.config(
     secure = True
 )
 
-# --- CÁC MODEL REQUEST (Pydantic cho API Input) ---
-from pydantic import BaseModel
+# --- MODELS REQUEST (Pydantic) ---
 class LoginRequest(BaseModel):
     userName: str
     password: str
+
 class RegisterRequest(BaseModel):
     userName: str
     password: str
     role: str = "USER"
+
 class GoogleLoginRequest(BaseModel):
     token: str
+
 class FacebookLoginRequest(BaseModel):
     accessToken: str
     userID: str
+
 class UserProfileUpdate(BaseModel):
     email: str = None
     phone: str = None
@@ -85,24 +106,48 @@ class UserProfileUpdate(BaseModel):
     gender: str = None
     nationality: str = None
     full_name: str = None
+
 class UpdateUsernameRequest(BaseModel):
     new_username: str
     new_password: str = None 
+
 class AssignDoctorRequest(BaseModel):
     patient_id: str
     doctor_id: str
+
 class DoctorNoteRequest(BaseModel):
     doctor_note: str
+
 class SendMessageRequest(BaseModel):
     receiver_id: str
     content: str
 
-# --- HÀM AUTH ---
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr 
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
+
+# --- HÀM AUTH HELPER ---
 def create_access_token(data: dict):
     to_encode = data.copy()
     expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+def verify_password(plain_password, hashed_password):
+    # Chuyển cả 2 về bytes để so sánh
+    password_byte_enc = plain_password.encode('utf-8')
+    hashed_password_byte_enc = hashed_password.encode('utf-8')
+    return bcrypt.checkpw(password_byte_enc, hashed_password_byte_enc)
+
+def get_password_hash(password):
+    # Chuyển password sang bytes, tạo salt và hash
+    pwd_bytes = password.encode('utf-8')
+    salt = bcrypt.gensalt()
+    hashed = bcrypt.hashpw(pwd_bytes, salt)
+    return hashed.decode('utf-8') # Trả về chuỗi để lưu vào DB
 
 async def get_current_user(token: str = Depends(oauth2_scheme)):
     credentials_exception = HTTPException(
@@ -119,26 +164,22 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
     user = await users_collection.find_one({"userName": userName})
     if user is None: raise credentials_exception
     
-    # Trả về full info để tiện dùng
     user_info = user.copy()
     user_info["id"] = str(user["_id"])
-    del user_info["_id"] # Xóa _id dạng object để tránh lỗi json
+    del user_info["_id"]
     if "password" in user_info: del user_info["password"]
     return user_info
 
-# --- TÁC VỤ NGẦM: CHẠY AI (Đã gọi hàm từ module ai/inference.py) ---
+# --- AI LOGIC (Background Task) ---
 async def real_ai_analysis(record_id: str, image_url: str):
     print(f"🤖 AI AURA đang phân tích hồ sơ: {record_id}...")
     try:
-        # 1. Tải ảnh
         response = requests.get(image_url)
         if response.status_code != 200: raise Exception("Lỗi tải ảnh Cloudinary")
         image_bytes = response.content
 
-        # 2. GỌI MODULE AI MỚI
         overlay_img, diagnosis_result, detailed_risk = run_aura_inference(image_bytes)
         
-        # 3. Upload kết quả
         is_success, buffer = cv2.imencode(".png", overlay_img)
         annotated_file = io.BytesIO(buffer.tobytes())
         
@@ -150,7 +191,6 @@ async def real_ai_analysis(record_id: str, image_url: str):
         )
         annotated_url = upload_result.get("secure_url")
         
-        # 4. Update DB
         await medical_records_collection.update_one(
             {"_id": ObjectId(record_id)},
             {
@@ -171,34 +211,40 @@ async def real_ai_analysis(record_id: str, image_url: str):
             {"$set": {"ai_analysis_status": "FAILED", "ai_result": "Lỗi phân tích"}}
         )
 
-# --- CÁC API ENDPOINTS ---
+# --- API ENDPOINTS ---
 
 @app.post("/api/register")
 async def register(data: RegisterRequest):
+    # 1. Check user tồn tại
     existing_user = await users_collection.find_one({"userName": data.userName})
-    if existing_user: raise HTTPException(status_code=400, detail="Tên tài khoản đã được sử dụng")
+    if existing_user: 
+        raise HTTPException(status_code=400, detail="Tên tài khoản đã được sử dụng")
     
-    hashed_password = bcrypt.hashpw(data.password.encode('utf-8'), bcrypt.gensalt())
+    # 2. Hash password bằng Passlib
+    hashed_password = get_password_hash(data.password)
     
-    # SỬ DỤNG MODEL USER (ORM)
+    # 3. Tạo User Model
     new_user_model = User(
-        username=data.userName,
-        email=data.userName if "@" in data.userName else "no_email@example.com",
-        password_hash=hashed_password.decode('utf-8'),
+        userName=data.userName,
+        email=data.userName if "@" in data.userName else f"{data.userName}@example.com",
+        password=hashed_password, 
         role=data.role,
         profile=UserProfile(full_name="New User")
     )
-    user_dict = new_user_model.model_dump(by_alias=True, exclude={"id"})
     
+    # 4. Lưu DB
+    user_dict = new_user_model.model_dump(by_alias=True, exclude={"id"})
     await users_collection.insert_one(user_dict)
+    
     return {"message": "Tạo tài khoản thành công!"}
 
 @app.post("/api/login")
 async def login(data: LoginRequest):
     user = await users_collection.find_one({"userName": data.userName})
-    if not user: raise HTTPException(status_code=400, detail="Tên tài khoản không tồn tại")
+    if not user: 
+        raise HTTPException(status_code=400, detail="Tên tài khoản không tồn tại")
     
-    if not bcrypt.checkpw(data.password.encode('utf-8'), user["password"].encode('utf-8')):
+    if not verify_password(data.password, user["password"]):
          raise HTTPException(status_code=400, detail="Sai mật khẩu")
 
     token_data = {"sub": user["userName"], "role": user["role"]}
@@ -250,15 +296,13 @@ async def get_medical_records(current_user: dict = Depends(get_current_user)):
 
 @app.get("/api/medical-records/{record_id}")
 async def get_single_record(record_id: str, current_user: dict = Depends(get_current_user)):
-    try:  # <--- THÊM TRY VÀO ĐÂY
+    try:
         query = {"_id": ObjectId(record_id)}
         if current_user["role"] != "DOCTOR": 
             query["user_id"] = current_user["id"]
             
         record = await medical_records_collection.find_one(query)
-        
-        if not record: 
-            raise HTTPException(404, "Không tìm thấy hồ sơ")
+        if not record: raise HTTPException(404, "Không tìm thấy hồ sơ")
             
         return {
             "id": str(record["_id"]),
@@ -269,11 +313,9 @@ async def get_single_record(record_id: str, current_user: dict = Depends(get_cur
             "annotated_image_url": record.get("annotated_image_url"),
             "doctor_note": record.get("doctor_note", "")
         }
-    except Exception as e: # <--- BẮT LỖI TẠI ĐÂY
+    except Exception as e:
         print(f"Lỗi: {e}")
         raise HTTPException(status_code=400, detail="ID không hợp lệ hoặc lỗi server")
-
-
 
 @app.put("/api/medical-records/{record_id}/note")
 async def update_doctor_note(record_id: str, data: DoctorNoteRequest, current_user: dict = Depends(get_current_user)):
@@ -335,67 +377,41 @@ async def google_login(data: GoogleLoginRequest):
 
 @app.post("/api/facebook-login")
 async def facebook_login(data: FacebookLoginRequest):
-    # 1. Gọi sang Facebook để lấy thông tin người dùng từ token
     fb_url = f"https://graph.facebook.com/me?fields=id,name,email,picture&access_token={data.accessToken}"
-    
     try:
         fb_response = requests.get(fb_url)
         fb_data = fb_response.json()
-    except Exception as e:
+    except Exception:
         raise HTTPException(status_code=400, detail="Không thể kết nối tới Facebook")
 
     if "error" in fb_data:
-        raise HTTPException(status_code=400, detail="Token Facebook không hợp lệ hoặc đã hết hạn")
+        raise HTTPException(status_code=400, detail="Token Facebook không hợp lệ")
 
-    # 2. Lấy thông tin
     email = fb_data.get("email")
     name = fb_data.get("name", "Facebook User")
     fb_id = fb_data.get("id")
+    if not email: email = f"{fb_id}@facebook.com"
 
-    # Lưu ý: Một số acc Facebook đăng ký bằng SĐT sẽ không có email.
-    # Ta sẽ dùng userID làm username thay thế nếu không có email.
-    if not email:
-        email = f"{fb_id}@facebook.com" # Email giả lập để hệ thống không lỗi
-
-    # 3. Tìm hoặc Tạo User trong DB
     user = await users_collection.find_one({"email": email})
     is_new_user = False
 
     if not user:
-        # Nếu chưa có -> Tạo mới
         new_user = {
-            "userName": email, 
-            "email": email,
-            "password": "", # Không cần pass
-            "role": "USER",
-            "auth_provider": "facebook",
-            "full_name": name,
-            "created_at": datetime.utcnow(),
+            "userName": email, "email": email, "password": "", "role": "USER",
+            "auth_provider": "facebook", "full_name": name, "created_at": datetime.utcnow(),
             "avatar": fb_data.get("picture", {}).get("data", {}).get("url")
         }
         result = await users_collection.insert_one(new_user)
-        user = new_user
-        user["_id"] = result.inserted_id
-        is_new_user = True
+        user = new_user; user["_id"] = result.inserted_id; is_new_user = True
     else:
-        # Nếu đã có -> Cập nhật thông tin nếu cần
-        if user.get("userName") == email:
-            is_new_user = True # Đánh dấu để frontend biết (tùy logic)
+        if user.get("userName") == email: is_new_user = True
 
-    # 4. Tạo Token nội bộ (AURA Token)
     token_data = {"sub": user["userName"], "role": user.get("role", "USER")}
-    access_token = create_access_token(token_data)
-
     return {
         "message": "Đăng nhập Facebook thành công",
-        "access_token": access_token,
+        "access_token": create_access_token(token_data),
         "token_type": "bearer",
-        "user_info": {
-            "userName": user["userName"],
-            "role": user.get("role", "USER"),
-            "email": user.get("email"),
-            "full_name": user.get("full_name")
-        },
+        "user_info": {"userName": user["userName"], "role": user.get("role", "USER"), "email": user.get("email"), "full_name": user.get("full_name")},
         "is_new_user": is_new_user
     }
 
@@ -404,11 +420,9 @@ async def set_username(data: UpdateUsernameRequest, current_user: dict = Depends
     user_id = current_user["id"]
     new_username = data.new_username.strip()
     
-    # Validate Username
     if len(new_username) < 3: 
         raise HTTPException(status_code=400, detail="Tên quá ngắn")
     
-    # Kiểm tra trùng tên (trừ chính mình ra)
     existing_user = await users_collection.find_one({
         "userName": new_username, 
         "_id": {"$ne": ObjectId(user_id)}
@@ -416,47 +430,33 @@ async def set_username(data: UpdateUsernameRequest, current_user: dict = Depends
     if existing_user: 
         raise HTTPException(status_code=400, detail="Tên đã tồn tại")
 
-    # Chuẩn bị dữ liệu update
     update_data = {"userName": new_username}
-
-    # Validate & Hash Password (Nếu có gửi lên)
     if data.new_password:
         if len(data.new_password) < 6:
             raise HTTPException(status_code=400, detail="Mật khẩu phải từ 6 ký tự trở lên")
-        
-        # Mã hóa mật khẩu
-        hashed_password = bcrypt.hashpw(data.new_password.encode('utf-8'), bcrypt.gensalt())
-        update_data["password"] = hashed_password.decode('utf-8')
+        update_data["password"] = get_password_hash(data.new_password)
 
-    # Thực hiện update vào DB
     await users_collection.update_one({"_id": ObjectId(user_id)}, {"$set": update_data})
     
-    # Tạo token mới với tên mới
     new_token_data = {"sub": new_username, "role": current_user["role"]}
-    new_access_token = create_access_token(new_token_data)
-    
     return {
         "message": "Cập nhật thành công", 
-        "new_access_token": new_access_token, 
+        "new_access_token": create_access_token(new_token_data), 
         "new_username": new_username
     }
 
 @app.put("/api/users/profile")
 async def update_user_profile(data: UserProfileUpdate, current_user: dict = Depends(get_current_user)):
-    print("📥 [DEBUG] Raw Data nhận được:", data.dict())
-    print("📥 [DEBUG] Data sau khi lọc None:", {k: v for k, v in data.dict().items() if v is not None})
     try:
         user_id = current_user["id"]
+        # Validate unique email/phone if needed
         if data.email:
-            existing = await users_collection.find_one({"email": data.email, "_id": {"$ne": ObjectId(user_id)}})
-            if existing: raise HTTPException(status_code=400, detail="Email đã dùng")
-        if data.phone:
-            existing = await users_collection.find_one({"phone": data.phone, "_id": {"$ne": ObjectId(user_id)}})
-            if existing: raise HTTPException(status_code=400, detail="SĐT đã dùng")
+            exist = await users_collection.find_one({"email": data.email, "_id": {"$ne": ObjectId(user_id)}})
+            if exist: raise HTTPException(status_code=400, detail="Email đã dùng")
+            
         update_data = {k: v for k, v in data.dict().items() if v is not None}
         await users_collection.update_one({"_id": ObjectId(user_id)}, {"$set": update_data})
         return {"message": "Cập nhật hồ sơ thành công", "data": update_data}
-    except HTTPException as e: raise e
     except Exception as e: raise HTTPException(status_code=500, detail="Lỗi server")
 
 @app.get("/api/doctor/my-patients")
@@ -483,30 +483,16 @@ async def get_all_users(current_user: dict = Depends(get_current_user)):
         users_list.append({"id": str(user["_id"]), "userName": user["userName"], "email": user.get("email", ""), "role": user.get("role", "USER"), "status": user.get("status", "ACTIVE"), "assigned_doctor_id": user.get("assigned_doctor_id", None)})
     return {"users": users_list}
 
-# --- CÁC API CHAT (CẬP NHẬT MỚI: ĐÃ FIX LỖI OBJECTID) ---
-
+# --- CHAT APIs ---
 @app.post("/api/chat/send")
 async def send_message(data: SendMessageRequest, current_user: dict = Depends(get_current_user)):
-    print(f"📩 DEBUG SEND: Từ {current_user['userName']} -> Tới {data.receiver_id} | Nội dung: {data.content}")
-
+    if data.receiver_id == "system":
+         return {"message": "Đã gửi tới hệ thống (Auto reply)"}
     try:
-        # 1. Xử lý trường hợp gửi cho Hệ thống (Tránh lỗi 400)
-        if data.receiver_id == "system":
-             # Trả về thành công giả để Frontend không bị lỗi, nhưng không lưu vào DB
-             return {"message": "Đã gửi tới hệ thống (Auto reply)"}
-             
-        # 2. Kiểm tra ID người nhận có hợp lệ không
-        try:
-            receiver_oid = ObjectId(data.receiver_id)
-        except Exception as e:
-            print(f"❌ Lỗi ID không hợp lệ: {data.receiver_id}")
-            raise HTTPException(status_code=400, detail=f"ID người nhận không hợp lệ: {data.receiver_id}")
-
+        receiver_oid = ObjectId(data.receiver_id)
         receiver = await users_collection.find_one({"_id": receiver_oid})
-        if not receiver:
-            raise HTTPException(status_code=404, detail="Người nhận không tồn tại")
+        if not receiver: raise HTTPException(status_code=404, detail="Người nhận không tồn tại")
 
-        # 3. Lưu tin nhắn vào DB
         new_message = {
             "sender_id": current_user["id"],
             "sender_name": current_user["userName"], 
@@ -515,59 +501,28 @@ async def send_message(data: SendMessageRequest, current_user: dict = Depends(ge
             "timestamp": datetime.utcnow(),
             "is_read": False
         }
-        
         await messages_collection.insert_one(new_message)
-        print("✅ Đã lưu tin nhắn vào DB")
         return {"message": "Đã gửi tin nhắn"}
-
-    except HTTPException as he:
-        raise he
-    except Exception as e:
-        print(f"❌ Lỗi Server: {e}")
-        raise HTTPException(status_code=500, detail="Lỗi server nội bộ")
+    except Exception as e: raise HTTPException(status_code=500, detail="Lỗi server nội bộ")
 
 @app.get("/api/chat/history/{other_user_id}")
 async def get_chat_history(other_user_id: str, current_user: dict = Depends(get_current_user)):
     user_id = current_user["id"]
-    
-    # Xử lý chat với hệ thống
     if other_user_id == "system":
-        return {
-            "messages": [
-                {
-                    "id": "sys_welcome", 
-                    "content": "Chào mừng bạn đến với AURA! Hãy chụp ảnh đáy mắt để bắt đầu.", 
-                    "is_me": False, 
-                    "time": datetime.now().strftime("%H:%M %d/%m")
-                }
-            ]
-        }
+        return {"messages": [{"id": "sys_welcome", "content": "Chào mừng bạn đến với AURA! Hãy chụp ảnh đáy mắt để bắt đầu.", "is_me": False, "time": datetime.now().strftime("%H:%M %d/%m")}]}
 
-    # Lấy tin nhắn 2 chiều (Tôi gửi HỌ hoặc HỌ gửi TÔI)
     cursor = messages_collection.find({
-        "$or": [
-            {"sender_id": user_id, "receiver_id": other_user_id},
-            {"sender_id": other_user_id, "receiver_id": user_id}
-        ]
-    }).sort("timestamp", 1) # Sắp xếp cũ nhất -> mới nhất
+        "$or": [{"sender_id": user_id, "receiver_id": other_user_id}, {"sender_id": other_user_id, "receiver_id": user_id}]
+    }).sort("timestamp", 1)
     
     messages = []
     async for msg in cursor:
         messages.append({
-            "id": str(msg["_id"]),
-            "sender_id": msg["sender_id"],
-            "content": msg["content"],
-            # Chuyển giờ UTC về giờ địa phương đơn giản (+7)
+            "id": str(msg["_id"]), "sender_id": msg["sender_id"], "content": msg["content"],
             "time": (msg["timestamp"] + timedelta(hours=7)).strftime("%H:%M %d/%m"),
             "is_me": msg["sender_id"] == user_id
         })
-        
-    # Đánh dấu đã đọc các tin nhắn do người kia gửi cho mình
-    await messages_collection.update_many(
-        {"sender_id": other_user_id, "receiver_id": user_id, "is_read": False},
-        {"$set": {"is_read": True}}
-    )
-        
+    await messages_collection.update_many({"sender_id": other_user_id, "receiver_id": user_id, "is_read": False}, {"$set": {"is_read": True}})
     return {"messages": messages}
 
 @app.get("/api/chats")
@@ -576,73 +531,98 @@ async def get_chats(current_user: dict = Depends(get_current_user)):
     role = current_user["role"]
     chats = []
 
-    # Hàm phụ để lấy thông tin chat (tin cuối, số tin chưa đọc)
     async def get_chat_info(partner_id, partner_name):
-        unread = await messages_collection.count_documents({
-            "sender_id": partner_id, "receiver_id": user_id, "is_read": False
-        })
-        last_msg = await messages_collection.find_one(
-            {"$or": [{"sender_id": user_id, "receiver_id": partner_id}, 
-                     {"sender_id": partner_id, "receiver_id": user_id}]},
-            sort=[("timestamp", -1)]
-        )
+        unread = await messages_collection.count_documents({"sender_id": partner_id, "receiver_id": user_id, "is_read": False})
+        last_msg = await messages_collection.find_one({"$or": [{"sender_id": user_id, "receiver_id": partner_id}, {"sender_id": partner_id, "receiver_id": user_id}]}, sort=[("timestamp", -1)])
         preview = last_msg["content"] if last_msg else "Bắt đầu cuộc trò chuyện..."
         time_str = (last_msg["timestamp"] + timedelta(hours=7)).strftime("%H:%M") if last_msg else ""
-        
-        return {
-            "id": partner_id,
-            "sender": partner_name,
-            "preview": preview,
-            "time": time_str,
-            "unread": unread > 0,
-            "unread_count": unread
-        }
+        return {"id": partner_id, "sender": partner_name, "preview": preview, "time": time_str, "unread": unread > 0, "unread_count": unread}
 
-
-    # 1. Nếu là Bệnh nhân -> Lấy Bác sĩ phụ trách
     if role == "USER":
         assigned_doc_id = current_user.get("assigned_doctor_id")
         if assigned_doc_id:
             try:
                 doctor = await users_collection.find_one({"_id": ObjectId(assigned_doc_id)})
                 if doctor:
-                    # Logic: Kiểm tra xem bác sĩ có field "full_name" không
-                    doc_real_name = doctor.get("full_name")
-                    
-                    if doc_real_name:
-                        # Nếu có tên thật (VD: Đỗ Đạt) -> hiển thị "BS. Đỗ Đạt"
-                        display_name = f"BS. {doc_real_name}"
-                    else:
-                        # Nếu chưa cập nhật tên thật -> dùng tạm userName cũ
-                        display_name = f"BS. {doctor['userName']}"
-
-                    # Gọi hàm lấy thông tin chat với tên hiển thị mới
-                    chat_info = await get_chat_info(str(doctor["_id"]), display_name)
-                    
-                    # (Tùy chọn) Gửi kèm trường full_name gốc để Frontend dùng nếu cần logic riêng
-                    chat_info['full_name'] = doc_real_name if doc_real_name else ""
-                    
-                    chats.append(chat_info)
-                    # -------------------
-            except Exception as e: print(f"Lỗi lấy chat user: {e}")
-
-    # 2. Nếu là Bác sĩ -> Lấy danh sách bệnh nhân
+                    name = f"BS. {doctor.get('full_name') or doctor['userName']}"
+                    chats.append(await get_chat_info(str(doctor["_id"]), name))
+            except Exception: pass
     elif role == "DOCTOR":
-        patients = users_collection.find({"assigned_doctor_id": user_id})
-        async for p in patients:
-            display_name = p.get("full_name") or p.get("userName")
-            chat_info = await get_chat_info(str(p["_id"]), display_name)
-            chat_info["full_name"] = p.get("full_name", "")
-            chats.append(chat_info)
+        async for p in users_collection.find({"assigned_doctor_id": user_id}):
+            name = p.get("full_name") or p.get("userName")
+            chats.append(await get_chat_info(str(p["_id"]), name))
 
-    # Chat Hệ thống (Đổi ID thành "system" chuẩn)
-    chats.append({
-        "id": "system", 
-        "sender": "Hệ thống AURA", 
-        "preview": "Thông báo hệ thống", 
-        "time": "", 
-        "unread": False,
-        "interlocutor_id": "system"
-    })
-    
+    chats.append({"id": "system", "sender": "Hệ thống AURA", "preview": "Thông báo hệ thống", "time": "", "unread": False, "interlocutor_id": "system"})
     return {"chats": chats}
+
+# --- FORGOT PASSWORD APIs (Đã thêm hàm gửi mail) ---
+
+@app.post("/api/forgot-password")
+async def forgot_password(request: ForgotPasswordRequest, bt: BackgroundTasks):
+    # 1. Tìm user
+    user = await users_collection.find_one({"email": request.email})
+    if not user:
+        raise HTTPException(status_code=404, detail="Email không tồn tại trong hệ thống")
+
+    # 2. Tạo Token
+    reset_token = str(uuid.uuid4())
+    expiration_time = datetime.utcnow() + timedelta(minutes=15)
+
+    # 3. Lưu vào DB
+    await users_collection.update_one(
+        {"_id": user["_id"]},
+        {"$set": {"reset_token": reset_token, "reset_token_exp": expiration_time}}
+    )
+
+    # 4. Gửi Email
+    reset_link = f"http://localhost:5173/reset-password?token={reset_token}"
+    
+    html_content = f"""
+    <div style="font-family: Arial, sans-serif; padding: 20px; color: #333;">
+        <h2 style="color: #4CAF50;">Yêu cầu đặt lại mật khẩu AURA</h2>
+        <p>Xin chào <strong>{user.get('userName', 'Bạn')}</strong>,</p>
+        <p>Chúng tôi vừa nhận được yêu cầu đặt lại mật khẩu cho tài khoản của bạn.</p>
+        <p>Vui lòng nhấp vào nút bên dưới để tạo mật khẩu mới (Link hết hạn sau 15 phút):</p>
+        <a href="{reset_link}" style="background-color: #4CAF50; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block;">Đặt lại mật khẩu ngay</a>
+        <p style="margin-top: 20px;">Hoặc copy đường dẫn này: <br>{reset_link}</p>
+        <p><i>Nếu bạn không yêu cầu, vui lòng bỏ qua email này.</i></p>
+    </div>
+    """
+
+    message = MessageSchema(
+        subject="[AURA] Đặt lại mật khẩu của bạn",
+        recipients=[request.email],
+        body=html_content,
+        subtype=MessageType.html
+    )
+
+    fm = FastMail(conf)
+    bt.add_task(fm.send_message, message)
+
+    return {"message": "Email hướng dẫn đã được gửi. Vui lòng kiểm tra hộp thư."}
+
+@app.post("/api/reset-password")
+async def reset_password(request: ResetPasswordRequest):
+    # 1. Tìm user bằng token
+    user = await users_collection.find_one({"reset_token": request.token})
+    if not user:
+        raise HTTPException(status_code=400, detail="Token không hợp lệ hoặc đã sử dụng.")
+
+    # 2. Check hạn
+    token_exp = user.get("reset_token_exp")
+    if token_exp and token_exp < datetime.utcnow():
+        raise HTTPException(status_code=400, detail="Token đã hết hạn.")
+
+    # 3. Hash pass mới
+    hashed_password = get_password_hash(request.new_password)
+
+    # 4. Update DB & Xóa token
+    await users_collection.update_one(
+        {"_id": user["_id"]},
+        {
+            "$set": {"password": hashed_password}, 
+            "$unset": {"reset_token": "", "reset_token_exp": ""}
+        }
+    )
+
+    return {"message": "Mật khẩu đã được đặt lại thành công!"}

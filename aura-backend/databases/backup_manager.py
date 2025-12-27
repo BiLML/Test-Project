@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Cấu hình
-MONGO_URI = os.getenv("MONGO_URL", "mongodb://localhost:27017")
+MONGO_URI = os.getenv("MONGO_URL", "mongodb://mongodb:27017")
 DB_NAME = "aura_db"  # Tên database của bạn
 BACKUP_DIR = "backups" # Thư mục chứa file backup
 

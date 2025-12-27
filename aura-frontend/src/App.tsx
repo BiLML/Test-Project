@@ -11,6 +11,8 @@ import Analysis from './Analysis';
 import SetUsername from './setUsername'; 
 import ProfilePage from './ProfilePage';
 import ProfileDr from './ProfileDr';
+import ForgotPassword from './ForgotPassword';
+import ResetPassword from './ResetPassword';
 
 // --- HÀM HỖ TRỢ ĐỌC ROLE TỪ LOCAL STORAGE (GIỮ NGUYÊN) ---
 const getUserRoleFromStorage = () => {
@@ -65,7 +67,7 @@ const App: React.FC = () => {
                     {/* 1. Các trang Công khai */}
                     <Route path="/login" element={<Login />} />
                     <Route path="/register" element={<Register />} />
-                    
+                    <Route path="/forgot-password" element={<ForgotPassword />} />
                     {/* 2. Các trang Bảo mật (Protected Routes) */}
                     <Route path="/dashboard" element={<ProtectedRoute element={<Dashboard />} />} />
                     <Route path="/dashboarddr" element={<ProtectedRoute element={<DashboardDr />} />} />
@@ -74,7 +76,7 @@ const App: React.FC = () => {
                     <Route path="/result/:id" element={<ProtectedRoute element={<Analysis />} />} />
                     <Route path="/set-username" element={<ProtectedRoute element={<SetUsername />} />} />
                     <Route path="/profile" element={<ProtectedRoute element={<ProfilePage />} />} />
-'
+                    <Route path="/reset-password" element={<ResetPassword />} />
                     {/* ROUTE CHO ADMIN DASHBOARD */}
                     <Route path="/admin" element={<ProtectedRoute element={<DashboardAdmin />} />} />
                     

@@ -137,7 +137,13 @@ const Login = () => {
                         <label htmlFor="remember-me" style={{cursor: 'pointer'}}>Remember me</label>
                     </div>
                     <div className="forgot-password">
-                        <a href="#">Forgot Password?</a>
+                        <span
+                            onClick={() => navigate('/forgot-password')}
+                            style={{cursor: 'pointer', color: '#ffffffff', fontSize: '0.9em'}}
+                            className='hover-underline'
+                        >
+                            Forgot Password?
+                        </span>
                     </div>
                 </div>
 
