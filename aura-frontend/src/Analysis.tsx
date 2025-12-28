@@ -8,28 +8,48 @@ const AnalysisResult: React.FC = () => {
     // --- MAIN STATE ---
     const [data, setData] = useState<any>(null);
     const [loading, setLoading] = useState(true);
-    const [viewMode, setViewMode] = useState<'original' | 'annotated'>('annotated'); // Mặc định hiển thị ảnh AI trước
+    const [viewMode, setViewMode] = useState<'original' | 'annotated'>('annotated'); 
 
-    // --- STATE CHO BÁC SĨ ---
+    // --- DOCTOR STATE ---
     const [isDoctor, setIsDoctor] = useState(false);
     const [doctorNote, setDoctorNote] = useState('');
     const [isSavingNote, setIsSavingNote] = useState(false);
 
-    // LOGIC 1: MÀU SẮC CẢNH BÁO
+    // LOGIC 1: SEVERITY COLOR & ADVICE (ENGLISH)
     const getSeverityInfo = (diagnosis: string) => {
-        if (!diagnosis) return { color: '#6c757d', label: 'Đang xử lý...', bg: '#f8f9fa' };
+        if (!diagnosis) return { color: '#6c757d', label: 'Processing...', bg: '#f8f9fa' };
         
-        // Logic khớp với Backend mới
-        if (diagnosis.includes("Nặng") || diagnosis.includes("Severe")) {
-            return { color: '#dc3545', label: 'NGUY HIỂM', bg: '#f8d7da', advice: '⚠️ CẢNH BÁO: Phát hiện nhiều tổn thương nghiêm trọng. Cần can thiệp y tế ngay lập tức.' };
+        // Check for keywords (covers both VN/EN just in case backend mixes them)
+        if (diagnosis.includes("Severe")) {
+            return { 
+                color: '#dc3545', 
+                label: 'DANGER', 
+                bg: '#f8d7da', 
+                advice: '⚠️ WARNING: Severe lesions detected. Immediate medical intervention required.' 
+            };
         }
-        if (diagnosis.includes("Trung bình") || diagnosis.includes("Moderate")) {
-            return { color: '#fd7e14', label: 'CẢNH BÁO', bg: '#ffe5d0', advice: '⚠️ Tổn thương mức độ trung bình. Cần khám chuyên sâu để ngăn chặn biến chứng.' };
+        if (diagnosis.includes("Moderate")) {
+            return { 
+                color: '#fd7e14', 
+                label: 'WARNING', 
+                bg: '#ffe5d0', 
+                advice: '⚠️ Moderate damage detected. In-depth examination needed to prevent complications.' 
+            };
         }
-        if (diagnosis.includes("Nhẹ") || diagnosis.includes("Mild")) {
-            return { color: '#ffc107', label: 'LƯU Ý', bg: '#fff3cd', advice: 'ℹ️ Phát hiện dấu hiệu sớm (Vi phình mạch). Cần theo dõi định kỳ 3 tháng/lần.' };
+        if (diagnosis.includes("Mild")) {
+            return { 
+                color: '#ffc107', 
+                label: 'NOTE', 
+                bg: '#fff3cd', 
+                advice: 'ℹ️ Early signs detected (Microaneurysms). Periodic monitoring every 3 months required.' 
+            };
         }
-        return { color: '#28a745', label: 'AN TOÀN', bg: '#d4edda', advice: '✅ Võng mạc ổn định. Không phát hiện tổn thương đáng kể.' };
+        return { 
+            color: '#28a745', 
+            label: 'SAFE', 
+            bg: '#d4edda', 
+            advice: '✅ Retinal health is stable. No significant lesions detected.' 
+        };
     };
 
     // LOGIC 2: LOAD DATA
@@ -53,7 +73,7 @@ const AnalysisResult: React.FC = () => {
                 setIsDoctor(isDoc);
             }
 
-            // 2. Load Bệnh án
+            // 2. Load Record
             const res = await fetch(`http://127.0.0.1:8000/api/medical-records/${id}`, {
                 headers: { 'Authorization': `Bearer ${token}` }
             });
@@ -62,12 +82,11 @@ const AnalysisResult: React.FC = () => {
                 const result = await res.json();
                 setData(result);
                 
-                // Nếu là bác sĩ, load ghi chú vào ô nhập liệu
                 if (isDoc) {
                     setDoctorNote(result.doctor_note || '');
                 }
                 
-                // Nếu đã có ảnh AI, tự động chuyển sang chế độ xem AI
+                // Auto switch to Annotated mode if available
                 if (result.annotated_image_url && viewMode === 'original') {
                      setViewMode('annotated');
                 }
@@ -84,19 +103,19 @@ const AnalysisResult: React.FC = () => {
         return "FAILED";
     }, [id, navigate]);
 
-    // Polling: Cập nhật trạng thái mỗi 2 giây nếu đang xử lý
+    // Polling
     useEffect(() => {
         fetchData();
         const intervalId = setInterval(async () => {
             const status = await fetchData();
-            if (status === "Hoàn thành" || status === "FAILED") {
+            if (status === "Hoàn thành" || status === "Completed" || status === "FAILED") {
                 clearInterval(intervalId); 
             }
         }, 2000);
         return () => clearInterval(intervalId);
     }, [fetchData]);
 
-    // LOGIC 3: LƯU GHI CHÚ
+    // LOGIC 3: SAVE DOCTOR NOTE
     const handleSaveDoctorNote = async () => {
         if (!doctorNote.trim()) return;
         const token = localStorage.getItem('token');
@@ -113,44 +132,94 @@ const AnalysisResult: React.FC = () => {
             });
 
             if (res.ok) {
-                alert("Lưu ghi chú thành công!");
+                alert("Doctor note saved successfully!");
                 setData((prev: any) => ({ ...prev, doctor_note: doctorNote }));
             } else {
-                alert("Lỗi khi lưu.");
+                alert("Error saving note.");
             }
         } catch (error) {
-            alert("Lỗi kết nối server.");
+            alert("Server connection error.");
         } finally {
             setIsSavingNote(false);
         }
     };
 
-    if (loading) return <div style={styles.loadingScreen}><div><div style={styles.spinner}></div><p>Đang tải dữ liệu AURA...</p></div></div>;
+    // LOGIC 4: EXPORT REPORT
+    const handleExport = async (format: 'pdf' | 'csv') => {
+        const token = localStorage.getItem('token');
+        if (!token || !data) return;
+
+        try {
+            const btnText = format === 'pdf' ? 'Generating PDF...' : 'Generating CSV...';
+            alert(btnText); 
+
+            const res = await fetch(`http://127.0.0.1:8000/api/medical-records/${id}/export?format=${format}`, {
+                method: 'GET',
+                headers: {
+                    'Authorization': `Bearer ${token}`
+                }
+            });
+
+            if (res.ok) {
+                const blob = await res.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `AURA_Report_${id}.${format}`;
+                document.body.appendChild(a);
+                a.click();
+                window.URL.revokeObjectURL(url);
+                document.body.removeChild(a);
+            } else {
+                alert("Error exporting report.");
+            }
+        } catch (error) {
+            console.error("Export error:", error);
+            alert("Server connection error.");
+        }
+    };
+
+    if (loading) return <div style={styles.loadingScreen}><div><div style={styles.spinner}></div><p>Loading AURA Data...</p></div></div>;
     if (!data) return null;
 
     const severity = getSeverityInfo(data.result);
     
-    // Chọn ảnh để hiển thị
+    // Choose image to display
     const imageUrl = viewMode === 'annotated' && data.annotated_image_url
         ? data.annotated_image_url 
         : data.image_url;
+    
+    // Determine if processing is finished (check against both English and Vietnamese status)
+    const isCompleted = data.status === 'Hoàn thành' || data.status === 'Completed';
 
     return (
         <div style={styles.container}>
-            <button onClick={() => navigate(isDoctor ? '/dashboarddr' : '/dashboard')} style={styles.backBtn}>&larr; Quay lại</button>
+            <button onClick={() => navigate(isDoctor ? '/dashboarddr' : '/dashboard')} style={styles.backBtn}>&larr; Back</button>
             
             <div style={styles.card}>
                 {/* HEADER */}
                 <div style={styles.header}>
                     <div>
-                        <h2 style={{margin: 0, fontSize: '24px'}}>👁️ Kết quả Phân tích AURA</h2>
-                        <p style={{margin: '5px 0 0 0', color: '#666', fontSize: '14px'}}>Mã hồ sơ: {data.id}</p>
+                        <h2 style={{margin: 0, fontSize: '24px'}}> AURA Analysis Result</h2>
+                        <p style={{margin: '5px 0 0 0', color: '#666', fontSize: '14px'}}>Record ID: {data.id}</p>
                     </div>
-                    <span style={styles.dateBadge}>{data.date} - {data.time}</span>
+
+                    <div style={{display: 'flex', gap: '10px', alignItems: 'center'}}>
+                        <div style={styles.exportGroup}>
+                            <button onClick={() => handleExport('csv')} style={styles.exportBtn}>
+                                Export CSV
+                            </button>
+                            <button onClick={() => handleExport('pdf')} style={{...styles.exportBtn, backgroundColor: '#dc3545', color: 'white'}}>
+                                Export PDF
+                            </button>
+                        </div>
+                        
+                        <span style={styles.dateBadge}>{data.date} - {data.time}</span>
+                    </div>
                 </div>
 
                 <div style={styles.contentGrid}>
-                    {/* CỘT TRÁI: ẢNH & VISUALIZATION */}
+                    {/* LEFT COL: IMAGE & VISUALIZATION */}
                     <div style={styles.leftColumn}>
                         <div style={styles.imageContainer}>
                             <img 
@@ -159,59 +228,59 @@ const AnalysisResult: React.FC = () => {
                                 style={styles.image} 
                             />
                             
-                            {/* Nút chuyển đổi chế độ xem */}
+                            {/* Toggle View Mode */}
                             {data.annotated_image_url && (
                                 <div style={styles.toggleContainer}>
                                     <button 
                                         onClick={() => setViewMode('original')}
                                         style={viewMode === 'original' ? styles.toggleActive : styles.toggleBtn}
                                     >
-                                        Ảnh Gốc
+                                        Original
                                     </button>
                                     <button 
                                         onClick={() => setViewMode('annotated')}
                                         style={viewMode === 'annotated' ? styles.toggleActive : styles.toggleBtn}
                                     >
-                                        ✨ AI Quét (Scan)
+                                        AI Scan
                                     </button>
                                 </div>
                             )}
 
                             {/* Loading Overlay */}
-                            {data.status !== 'Hoàn thành' && (
+                            {!isCompleted && (
                                 <div style={styles.processingOverlay}>
                                     <div style={styles.spinner}></div>
-                                    <p style={{color: 'white', marginTop: '15px', fontWeight: '500'}}>AI đang vẽ bản đồ tổn thương...</p>
+                                    <p style={{color: 'white', marginTop: '15px', fontWeight: '500'}}>AI is mapping lesions...</p>
                                 </div>
                             )}
                         </div>
 
-                        {/* CHÚ THÍCH MÀU SẮC (LEGEND) - QUAN TRỌNG CHO BẢN ĐỒ MỚI */}
-                        {viewMode === 'annotated' && data.status === 'Hoàn thành' && (
+                        {/* LEGEND */}
+                        {viewMode === 'annotated' && isCompleted && (
                             <div style={styles.legendBox}>
-                                <h4 style={{margin: '0 0 10px 0', fontSize: '13px', textTransform: 'uppercase', color: '#555'}}>Chú giải bản đồ AURA:</h4>
+                                <h4 style={{margin: '0 0 10px 0', fontSize: '13px', textTransform: 'uppercase', color: '#555'}}>AURA Map Legend:</h4>
                                 <div style={styles.legendGrid}>
-                                    <div style={styles.legendItem}><span style={{...styles.dot, background: 'red'}}></span>Xuất huyết (Máu)</div>
-                                    <div style={styles.legendItem}><span style={{...styles.dot, background: 'yellow'}}></span>Xuất tiết (Mỡ/Dịch)</div>
-                                    <div style={styles.legendItem}><span style={{...styles.dot, background: '#00ff00'}}></span>Mạch máu</div>
-                                    <div style={styles.legendItem}><span style={{...styles.dot, background: 'blue'}}></span>Đĩa thị (Gai thị)</div>
+                                    <div style={styles.legendItem}><span style={{...styles.dot, background: 'red'}}></span>Hemorrhages</div>
+                                    <div style={styles.legendItem}><span style={{...styles.dot, background: 'yellow'}}></span>Exudates</div>
+                                    <div style={styles.legendItem}><span style={{...styles.dot, background: '#00ff00'}}></span>Vessels</div>
+                                    <div style={styles.legendItem}><span style={{...styles.dot, background: 'blue'}}></span>Optic Disc</div>
                                 </div>
                             </div>
                         )}
                     </div>
 
-                    {/* CỘT PHẢI: THÔNG TIN & CHẨN ĐOÁN */}
+                    {/* RIGHT COL: DIAGNOSIS & INFO */}
                     <div style={styles.rightColumn}>
-                        {data.status !== 'Hoàn thành' ? (
+                        {!isCompleted ? (
                             <div style={styles.pendingBox}>
-                                <h3>🔄 Đang xử lý...</h3>
-                                <p>Hệ thống đang chạy 6 mô hình AI để phân tách mạch máu và tổn thương.</p>
+                                <h3>🔄 Processing...</h3>
+                                <p>Running 6 AI models to segment vessels and lesions.</p>
                             </div>
                         ) : (
                             <>
-                                {/* KẾT QUẢ CHÍNH */}
+                                {/* MAIN RESULT */}
                                 <div style={styles.resultBox}>
-                                    <label style={styles.label}>Tình trạng võng mạc:</label>
+                                    <label style={styles.label}>Retinal Condition:</label>
                                     <h1 style={{color: severity.color, margin: '5px 0 15px 0', fontSize: '32px'}}>{data.result}</h1>
                                     
                                     <div style={{backgroundColor: severity.bg, padding: '15px', borderRadius: '8px', borderLeft: `4px solid ${severity.color}`}}>
@@ -219,19 +288,18 @@ const AnalysisResult: React.FC = () => {
                                     </div>
                                 </div>
 
-                                {/* CHI TIẾT PHÂN TÍCH (Lấy từ doctor_note do Backend tạo ra) */}
+                                {/* DETAILED ANALYSIS */}
                                 <div style={styles.analysisDetails}>
-                                    <h4 style={{color: '#0056b3', borderBottom: '1px solid #eee', paddingBottom: '8px'}}>📊 Phân tích chi tiết & Rủi ro:</h4>
+                                    <h4 style={{color: '#0056b3', borderBottom: '1px solid #eee', paddingBottom: '8px'}}>📊 Detailed Analysis & Risks:</h4>
                                     <div style={{whiteSpace: 'pre-line', lineHeight: '1.6', color: '#444', fontSize: '14px'}}>
-                                        {/* Backend mới lưu chi tiết phân tích vào trường doctor_note ban đầu */}
-                                        {data.doctor_note || "Chưa có dữ liệu chi tiết."}
+                                        {data.doctor_note || "No details available."}
                                     </div>
                                 </div>
 
-                                {/* KHU VỰC CỦA BÁC SĨ (EDIT) */}
+                                {/* DOCTOR EDIT AREA */}
                                 {isDoctor && (
                                     <div style={styles.doctorArea}>
-                                        <h4 style={{fontSize: '14px', marginBottom: '10px'}}>📝 Chỉnh sửa Chẩn đoán:</h4>
+                                        <h4 style={{fontSize: '14px', marginBottom: '10px'}}>📝 Edit Diagnosis:</h4>
                                         <textarea
                                             value={doctorNote}
                                             onChange={(e) => setDoctorNote(e.target.value)}
@@ -243,7 +311,7 @@ const AnalysisResult: React.FC = () => {
                                             style={styles.saveBtn} 
                                             disabled={isSavingNote}
                                         >
-                                            {isSavingNote ? 'Đang lưu...' : 'Lưu cập nhật'}
+                                            {isSavingNote ? 'Saving...' : 'Save Update'}
                                         </button>
                                     </div>
                                 )}
@@ -293,7 +361,20 @@ const styles: { [key: string]: React.CSSProperties } = {
     // Utilities
     pendingBox: { textAlign: 'center', padding: '40px', background: '#f8f9fa', borderRadius: '12px', color: '#666' },
     processingOverlay: { position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.7)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' },
-    spinner: { width: '40px', height: '40px', border: '3px solid rgba(255,255,255,0.3)', borderTop: '3px solid white', borderRadius: '50%', animation: 'spin 1s linear infinite' }
+    spinner: { width: '40px', height: '40px', border: '3px solid rgba(255,255,255,0.3)', borderTop: '3px solid white', borderRadius: '50%', animation: 'spin 1s linear infinite' }, // <--- Đã thêm dấu phẩy tại đây
+
+    // Export Buttons
+    exportGroup: { display: 'flex', gap: '8px', marginRight: '15px' },
+    exportBtn: {
+        border: '1px solid #ccc',
+        backgroundColor: 'white',
+        padding: '6px 12px',
+        borderRadius: '6px',
+        cursor: 'pointer',
+        fontSize: '13px',
+        fontWeight: '600',
+        transition: '0.2s'
+    }
 };
 
 // Animation Spinner

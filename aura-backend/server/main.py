@@ -1,14 +1,16 @@
-# aura-backend/main.py
 import os
 import io
 import requests # type: ignore
 from datetime import datetime, timedelta
 import uuid
+import unicodedata
+import asyncio
 
 # --- THIRD PARTY LIBS ---
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Depends, status, File, UploadFile, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from typing import List # List cho kiểu dữ liệu Pydantic
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 import cloudinary
@@ -26,9 +28,19 @@ from models import User, UserProfile, Message
 # Import thư viện gửi mail
 from fastapi_mail import FastMail, MessageSchema, ConnectionConfig, MessageType
 
+# Thư viện xuất file ảnh
+import csv
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.utils import ImageReader
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from fastapi.responses import StreamingResponse
+
 # --- CẤU HÌNH ---
 load_dotenv()
 app = FastAPI()
+ai_lock = asyncio.Semaphore(2) # CHỐNG NỔ MÁY
 
 # --- CẤU HÌNH GỬI MAIL (Chỉ khai báo 1 lần ở đây) ---
 conf = ConnectionConfig(
@@ -129,6 +141,12 @@ class ResetPasswordRequest(BaseModel):
     token: str
     new_password: str
 
+# --- HÀM XỬ LÝ TIẾNG VIỆT ---
+def remove_accents(input_str):
+    if not input_str: return ""
+    nfkd_form = unicodedata.normalize('NFKD', input_str)
+    return "".join([c for c in nfkd_form if not unicodedata.combining(c)])
+
 # --- HÀM AUTH HELPER ---
 def create_access_token(data: dict):
     to_encode = data.copy()
@@ -171,46 +189,41 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
     return user_info
 
 # --- AI LOGIC (Background Task) ---
+# HÀM AI WRAPPER MỚI (CHỐNG LAG)
 async def real_ai_analysis(record_id: str, image_url: str):
-    print(f"🤖 AI AURA đang phân tích hồ sơ: {record_id}...")
-    try:
-        response = requests.get(image_url)
-        if response.status_code != 200: raise Exception("Lỗi tải ảnh Cloudinary")
-        image_bytes = response.content
+    async with ai_lock: # Xếp hàng chờ nếu server đang bận
+        print(f"🤖 AI AURA bắt đầu phân tích: {record_id}")
+        try:
+            response = requests.get(image_url)
+            if response.status_code != 200: raise Exception("Lỗi tải ảnh Cloudinary")
+            image_bytes = response.content
 
-        overlay_img, diagnosis_result, detailed_risk = run_aura_inference(image_bytes)
-        
-        is_success, buffer = cv2.imencode(".png", overlay_img)
-        annotated_file = io.BytesIO(buffer.tobytes())
-        
-        upload_result = cloudinary.uploader.upload(
-            file=annotated_file, 
-            public_id=f"aura_scan_{record_id}", 
-            folder="aura_results",
-            resource_type="image"
-        )
-        annotated_url = upload_result.get("secure_url")
-        
-        await medical_records_collection.update_one(
-            {"_id": ObjectId(record_id)},
-            {
-                "$set": {
-                    "ai_analysis_status": "COMPLETED",
-                    "ai_result": diagnosis_result,
-                    "doctor_note": detailed_risk,
-                    "annotated_image_url": annotated_url
-                }
-            }
-        )
-        print(f"✅ Hồ sơ {record_id} hoàn tất.")
-    
-    except Exception as e:
-        print(f"❌ Lỗi AI: {e}")
-        await medical_records_collection.update_one(
-            {"_id": ObjectId(record_id)},
-            {"$set": {"ai_analysis_status": "FAILED", "ai_result": "Lỗi phân tích"}}
-        )
-
+            # Chạy AI trong Thread Pool để không chặn API
+            loop = asyncio.get_running_loop()
+            overlay_img, diagnosis_result, detailed_risk = await loop.run_in_executor(
+                None, run_aura_inference, image_bytes
+            )
+            
+            # Encode ảnh kết quả
+            is_success, buffer = cv2.imencode(".png", overlay_img)
+            annotated_file = io.BytesIO(buffer.tobytes())
+            
+            # Upload kết quả
+            upload_result = await loop.run_in_executor(None, lambda: cloudinary.uploader.upload(
+                file=annotated_file, public_id=f"aura_scan_{record_id}", folder="aura_results", resource_type="image"
+            ))
+            annotated_url = upload_result.get("secure_url")
+            
+            await medical_records_collection.update_one(
+                {"_id": ObjectId(record_id)},
+                {"$set": {"ai_analysis_status": "COMPLETED", "ai_result": diagnosis_result, "doctor_note": detailed_risk, "annotated_image_url": annotated_url}}
+            )
+            print(f"✅ Hồ sơ {record_id} hoàn tất.")
+        except Exception as e:
+            print(f"❌ Lỗi AI ({record_id}): {e}")
+            await medical_records_collection.update_one(
+                {"_id": ObjectId(record_id)}, {"$set": {"ai_analysis_status": "FAILED", "ai_result": "Lỗi phân tích"}}
+            )
 # --- API ENDPOINTS ---
 
 @app.post("/api/register")
@@ -258,26 +271,6 @@ async def login(data: LoginRequest):
 @app.get("/api/users/me")
 async def read_users_me(current_user: dict = Depends(get_current_user)):
     return {"message": "Dữ liệu người dùng", "user_info": current_user}
-
-@app.post("/api/upload-eye-image")
-async def upload_eye_image(bg_tasks: BackgroundTasks, file: UploadFile = File(...), current_user: dict = Depends(get_current_user)):
-    if not file.content_type.startswith("image/"): raise HTTPException(400, "File không hợp lệ")
-    try:
-        res = cloudinary.uploader.upload(file.file, folder="aura_retina")
-        img_url = res.get("secure_url")
-        
-        record = {
-            "user_id": current_user["id"],
-            "userName": current_user["userName"],
-            "image_url": img_url,
-            "upload_date": datetime.utcnow(),
-            "ai_analysis_status": "PENDING",
-            "ai_result": "Đang phân tích..." 
-        }
-        new_rec = await medical_records_collection.insert_one(record)
-        bg_tasks.add_task(real_ai_analysis, str(new_rec.inserted_id), img_url)
-        return {"message": "Upload thành công!", "url": img_url, "record_id": str(new_rec.inserted_id)}
-    except Exception as e: raise HTTPException(500, f"Lỗi server: {e}")
 
 @app.get("/api/medical-records")
 async def get_medical_records(current_user: dict = Depends(get_current_user)):
@@ -626,3 +619,174 @@ async def reset_password(request: ResetPasswordRequest):
     )
 
     return {"message": "Mật khẩu đã được đặt lại thành công!"}
+
+# --- EXPORT API ---
+@app.get("/api/medical-records/{record_id}/export")
+async def export_record(
+    record_id: str, 
+    format: str = "pdf", 
+    current_user: dict = Depends(get_current_user)
+):
+    # 1. Get Record Data
+    try:
+        record = await medical_records_collection.find_one({"_id": ObjectId(record_id)})
+        if not record:
+            raise HTTPException(404, "Medical record not found")
+        
+        # Check permission
+        if current_user["role"] != "DOCTOR" and str(record["user_id"]) != current_user["id"]:
+             raise HTTPException(403, "Permission denied")
+             
+        # Get Patient Info
+        patient = await users_collection.find_one({"_id": ObjectId(record["user_id"])})
+        
+        # Lấy tên gốc và chuyển thành không dấu
+        raw_name = patient.get("full_name", record.get("userName", "N/A"))
+        patient_name = remove_accents(raw_name) # <--- SỬA DÒNG NÀY
+        
+    except Exception:
+        raise HTTPException(400, "Error retrieving data")
+
+    # 2. PROCESS CSV EXPORT
+    if format == "csv":
+        output = io.StringIO()
+        writer = csv.writer(output)
+        
+        # English Headers
+        writer.writerow(["Record ID", "Patient Name", "Scan Date", "Result", "Doctor Note", "Image Link"])
+        # Data Row
+        writer.writerow([
+            str(record["_id"]),
+            patient_name,
+            record["upload_date"].strftime("%Y-%m-%d %H:%M:%S"),
+            record["ai_result"],
+            record.get("doctor_note", "").replace("\n", " "),
+            record.get("annotated_image_url", record["image_url"])
+        ])
+        
+        output.seek(0)
+        return StreamingResponse(
+            io.BytesIO(output.getvalue().encode('utf-8-sig')),
+            media_type="text/csv",
+            headers={"Content-Disposition": f"attachment; filename=AURA_Report_{record_id}.csv"}
+        )
+
+    # 3. PROCESS PDF EXPORT
+    elif format == "pdf":
+        buffer = io.BytesIO()
+        p = canvas.Canvas(buffer, pagesize=A4)
+        width, height = A4
+        
+        # Use Standard Fonts (No need for external .ttf files for English)
+        # Note: If patient names have accents (e.g., José, Nguyễn), standard Helvetica might glitch.
+        # Ideally still use a Unicode font like Arial if names are non-English.
+        font_bold = "Helvetica-Bold"
+        font_regular = "Helvetica"
+        
+        # Header
+        p.setFont(font_bold, 20)
+        p.drawString(50, height - 50, "AURA - RETINAL ANALYSIS REPORT")
+        
+        p.setFont(font_regular, 10)
+        p.drawString(50, height - 70, f"Report ID: {record_id}")
+        p.drawString(50, height - 85, f"Date: {record['upload_date'].strftime('%Y-%m-%d %H:%M')}")
+        
+        p.line(50, height - 95, width - 50, height - 95)
+        
+        # Patient Info
+        p.setFont(font_bold, 12)
+        p.drawString(50, height - 120, "PATIENT INFORMATION:")
+        p.setFont(font_regular, 12)
+        p.drawString(50, height - 140, f"Name: {patient_name}")
+        p.drawString(50, height - 160, f"User ID: {record['user_id']}")
+        
+        # Diagnosis Result
+        p.setFont(font_bold, 12)
+        p.drawString(50, height - 200, "DIAGNOSIS RESULT:")
+        
+        # Color logic based on severity
+        result_text = record["ai_result"]
+        if "Severe" in result_text or "Proliferative" in result_text:
+            p.setFillColorRGB(0.8, 0, 0) # Red
+        elif "Moderate" in result_text or "Suspected" in result_text:
+            p.setFillColorRGB(1, 0.5, 0) # Orange
+        else:
+            p.setFillColorRGB(0, 0.5, 0) # Green
+            
+        p.setFont(font_bold, 14)
+        p.drawString(50, height - 225, result_text)
+        p.setFillColorRGB(0, 0, 0) # Reset to black
+        
+        # Doctor Note / Details
+        p.setFont(font_bold, 12)
+        p.drawString(50, height - 260, "DETAILED ANALYSIS / DOCTOR NOTE:")
+        
+        p.setFont(font_regular, 10)
+        text = p.beginText(50, height - 280)
+        note_content = record.get("doctor_note", "No details available.")
+        
+        # Simple text wrapping
+        import textwrap
+        lines = textwrap.wrap(note_content, width=90)
+        for line in lines[:15]: 
+            text.textLine(line)
+        p.drawText(text)
+        
+        # Insert Image
+        img_url = record.get("annotated_image_url", record["image_url"])
+        if img_url:
+            try:
+                img_data = requests.get(img_url, timeout=5).content
+                img = ImageReader(io.BytesIO(img_data))
+                # Draw image at the bottom half
+                p.drawImage(img, 100, 100, width=400, height=400, preserveAspectRatio=True, mask='auto')
+            except Exception as e:
+                p.drawString(50, 200, f"[Cannot load image: {e}]")
+
+        # Footer
+        p.setFont("Helvetica-Oblique", 8)
+        p.drawString(50, 30, "This report is generated by AURA AI System. Please consult a doctor for final conclusion.")
+        
+        p.showPage()
+        p.save()
+        
+        buffer.seek(0)
+        return StreamingResponse(
+            buffer, 
+            media_type="application/pdf", 
+            headers={"Content-Disposition": f"attachment; filename=AURA_Report_{record_id}.pdf"}
+        )
+    
+    else:
+        raise HTTPException(400, "Unsupported format")
+
+# API UPLOAD NHIỀU ẢNH
+@app.post("/api/upload-eye-image")
+async def upload_eye_images(
+    bg_tasks: BackgroundTasks, 
+    files: List[UploadFile] = File(...),  # <--- Hỗ trợ list
+    current_user: dict = Depends(get_current_user)
+):
+    if not files: raise HTTPException(400, "Chưa chọn file")
+    
+    results = []
+    for file in files:
+        if not file.content_type.startswith("image/"): continue
+        try:
+            res = cloudinary.uploader.upload(file.file, folder="aura_retina")
+            img_url = res.get("secure_url")
+            
+            record = {
+                "user_id": current_user["id"], "userName": current_user["userName"],
+                "image_url": img_url, "upload_date": datetime.utcnow(),
+                "ai_analysis_status": "PENDING", "ai_result": "Đang chờ phân tích..." 
+            }
+            new_rec = await medical_records_collection.insert_one(record)
+            
+            # Đẩy task vào hàng đợi
+            bg_tasks.add_task(real_ai_analysis, str(new_rec.inserted_id), img_url)
+            
+            results.append({"url": img_url, "record_id": str(new_rec.inserted_id)})
+        except Exception as e: print(f"Lỗi upload: {e}")
+            
+    return {"message": f"Đã nhận {len(results)} ảnh", "data": results}

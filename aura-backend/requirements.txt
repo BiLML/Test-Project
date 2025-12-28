@@ -1,26 +1,35 @@
 # --- Core Server ---
 fastapi==0.124.0
 uvicorn==0.38.0
-python-multipart==0.0.20  # Để upload ảnh
-python-dotenv==1.2.1      # Đọc biến môi trường
-requests==2.32.5          # Gọi API Google/Facebook
+python-multipart==0.0.20
+python-dotenv==1.2.1
+requests==2.32.5
 
 # --- Database ---
-motor==3.7.1              # MongoDB Async
+motor==3.7.1
 pymongo==4.15.5
 
 # --- Auth & Security ---
-python-jose==3.5.0        # JWT Token
-bcrypt==5.0.0             # Hash mật khẩu (Bạn có cài bcrypt 5.0.0)
-passlib==1.7.4            # Hỗ trợ check password
+python-jose==3.5.0
+bcrypt==5.0.0
+passlib==1.7.4
 
-# --- AI & Image Processing ---
-tensorflow==2.20.0        # Bản mới nhất bạn đang dùng
-keras==3.12.0
-numpy==2.2.6              # Numpy bản mới (2.x)
-opencv-python-headless==4.12.0.88 # Bản nhẹ cho Server (không cần GUI)
-pillow==12.0.0            # Xử lý ảnh
-cloudinary==1.44.1        # Upload cloud
+# --- Image Processing & Utils ---
+numpy==2.2.6
+opencv-python-headless==4.12.0.88
+pillow==12.0.0
+cloudinary==1.44.1
 
-email-validator
-fastapi-mail
+# --- Email & Reports ---
+# SỬA LỖI: Cập nhật lên bản 2.2.0 để khớp với fastapi-mail
+email-validator==2.2.0
+fastapi-mail==1.4.2
+reportlab==4.2.5
+
+# --- AI Runtime ---
+onnxruntime==1.23.2
+
+# --- AI Development (Optional) ---
+# Nếu chỉ chạy server, bạn có thể xóa 2 dòng dưới để nhẹ máy
+tensorflow
+tf2onnx==1.16.1

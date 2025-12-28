@@ -1,19 +1,20 @@
-# Sử dụng Python 3.10 Slim để cân bằng giữa độ nhẹ và tính tương thích
+# Sử dụng Python 3.10 Slim
 FROM python:3.10-slim
 
-# 1. Cài đặt thư viện hệ thống cần thiết cho OpenCV và các phép toán AI
+# 1. Cài đặt thư viện hệ thống (QUAN TRỌNG: Thêm libgomp1 cho ONNX)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-0 \
     libsm6 \
     libxext6 \
     libxrender-dev \
+    libgomp1 \   
     && rm -rf /var/lib/apt/lists/*
+    # ^^^ Dòng trên (libgomp1) là bắt buộc để chạy ONNX Runtime
 
 WORKDIR /app
 
 # 2. Copy file thư viện và cài đặt
 COPY requirements.txt .
-# Thêm --upgrade pip để đảm bảo pip xử lý được các gói wheel mới nhất
 RUN pip install --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
@@ -23,5 +24,5 @@ COPY . .
 # 4. Mở port
 EXPOSE 8000
 
-# 5. Chạy server (Đường dẫn dựa trên cấu trúc thư mục của bạn)
+# 5. Chạy server
 CMD ["uvicorn", "server.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]

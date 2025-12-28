@@ -63,7 +63,22 @@ const Dashboard: React.FC = () => {
         } catch (error) { console.error("Lỗi chat:", error); }
     }, []);
 
-    // --- 2. HÀM TẢI LỊCH SỬ TIN NHẮN ---
+    // --- 2. HÀM TẢI LỊCH SỬ KHÁM (QUAN TRỌNG: Đã thêm useCallback) ---
+    const fetchMedicalRecords = useCallback(async () => {
+        const token = localStorage.getItem('token');
+        if (!token) return;
+        try {
+            const historyRes = await fetch('http://127.0.0.1:8000/api/medical-records', {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            if (historyRes.ok) {
+                const historyData = await historyRes.json();
+                setHistoryData(historyData.history);
+            }
+        } catch (err) { console.error("Lỗi cập nhật hồ sơ:", err); }
+    }, []);
+
+    // --- 3. HÀM TẢI TIN NHẮN CHAT ---
     const fetchMessageHistory = async (partnerId: string) => {
         const token = localStorage.getItem('token');
         if (!token) return null;
@@ -87,7 +102,7 @@ const Dashboard: React.FC = () => {
         fetchChatData(); 
     };
 
-    // --- 3. HÀM GỬI TIN NHẮN ---
+    // --- 4. GỬI TIN NHẮN ---
     const handleSendMessage = async (e: React.FormEvent) => {
         e.preventDefault();
         if (!newMessageText.trim() || !selectedChatId) return;
@@ -133,35 +148,27 @@ const Dashboard: React.FC = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }, [currentMessages]);
 
-    // --- POLLING ---
+    // --- 5. POLLING TỰ ĐỘNG (Đã sửa: Cập nhật cả Chat và Bệnh án) ---
     useEffect(() => {
         const interval = setInterval(async () => {
+             // 1. Cập nhật danh sách chat
              fetchChatData(); 
+             
+             // 2. Cập nhật kết quả khám (ĐÂY LÀ DÒNG QUAN TRỌNG MỚI THÊM)
+             fetchMedicalRecords();
+
+             // 3. Cập nhật tin nhắn trong phòng chat
              if (selectedChatId && selectedChatId !== 'system') {
                 const serverMsgs = await fetchMessageHistory(selectedChatId);
                 if (serverMsgs && serverMsgs.length > currentMessages.length) {
                     setCurrentMessages(serverMsgs);
                 }
              }
-        }, 3000); 
+        }, 3000); // Chạy mỗi 3 giây
         return () => clearInterval(interval);
-    }, [selectedChatId, fetchChatData, currentMessages.length]);
+    }, [selectedChatId, fetchChatData, fetchMedicalRecords, currentMessages.length]);
 
     // --- LOGIC KHỞI TẠO ---
-    const fetchMedicalRecords = async () => {
-        const token = localStorage.getItem('token');
-        if (!token) return;
-        try {
-            const historyRes = await fetch('http://127.0.0.1:8000/api/medical-records', {
-                headers: { 'Authorization': `Bearer ${token}` }
-            });
-            if (historyRes.ok) {
-                const historyData = await historyRes.json();
-                setHistoryData(historyData.history);
-            }
-        } catch (err) { console.error("Lỗi cập nhật:", err); }
-    };
-
     useEffect(() => {
         const initData = async () => {
             const token = localStorage.getItem('token');
@@ -176,13 +183,14 @@ const Dashboard: React.FC = () => {
                 setUserRole(userData.user_info.role);
                 setUserId(userData.user_info.id);
                 setFullName(userData.user_info.full_name || '');
-                await fetchMedicalRecords();
+                
+                await fetchMedicalRecords(); // Gọi ngay lần đầu
                 await fetchChatData(); 
             } catch (error) { console.error("Lỗi tải dữ liệu:", error); } 
             finally { setIsLoading(false); }
         };
         initData();
-    }, [navigate, fetchChatData]);
+    }, [navigate, fetchChatData, fetchMedicalRecords]);
 
     useEffect(() => {
         const handleClickOutside = (event: MouseEvent) => {
@@ -220,9 +228,16 @@ const Dashboard: React.FC = () => {
         if (newState) setHasViewedNotifications(true);
     };
 
+    // Helper: Màu trạng thái
+    const getStatusColor = (status: string) => {
+        if (status.includes("Hoàn thành") || status.includes("Completed")) return "#28a745"; // Xanh
+        if (status.includes("Lỗi") || status.includes("Failed")) return "#dc3545"; // Đỏ
+        return "#e67e22"; // Cam (Đang chờ)
+    };
+
     // --- RENDER ---
     const totalScans = historyData.length;
-    const highRiskCount = historyData.filter(item => item.result.includes('Nặng') || item.result.includes('Trung Bình')).length;
+    const highRiskCount = historyData.filter(item => item.result.includes('Nặng') || item.result.includes('Trung Bình') || item.result.includes('Severe') || item.result.includes('Moderate') || item.result.includes('PDR')).length;
     const recentNotifications = historyData.slice(0, 5);
     const serverHasUnread = recentNotifications.some(item => item.status === 'Hoàn thành');
     const showRedDot = serverHasUnread && !hasViewedNotifications;
@@ -242,12 +257,10 @@ const Dashboard: React.FC = () => {
                             {chatData.map(msg => (
                                 <div key={msg.id} style={{...styles.chatListItem, backgroundColor: selectedChatId === msg.id ? '#ebf5ff' : 'transparent'}} onClick={() => openChat(msg.id)}>
                                     <div style={styles.avatarLarge}>
-                                    {/* Lấy chữ cái đầu của full_name, nếu không có thì dùng sender */}
                                     {(msg.full_name || msg.sender).charAt(0).toUpperCase()}
                                 </div>
                                 <div style={{flex: 1, overflow: 'hidden'}}>
                                     <div style={{display: 'flex', justifyContent: 'space-between'}}>
-                                    {/* Hiển thị full_name */}
                                     <span style={{fontWeight: msg.unread ? '800' : '500', fontSize: '15px', color: '#050505'}}>
                                         {msg.full_name || msg.sender}
                                     </span>
@@ -292,8 +305,6 @@ const Dashboard: React.FC = () => {
                                     ))}
                                     <div ref={messagesEndRef} />
                                 </div>
-                                
-                                {/* ẨN THANH INPUT NẾU LÀ SYSTEM */}
                                 {selectedChatId !== 'system' && (
                                     <div style={styles.chatInputArea}>
                                         <form onSubmit={handleSendMessage} style={{flex: 1, display: 'flex'}}>
@@ -336,8 +347,21 @@ const Dashboard: React.FC = () => {
                             {historyData.map((item, i) => (
                                 <tr key={i} style={{ borderBottom: '1px solid #f0f0f0' }}>
                                     <td style={{padding:'12px'}}>{item.date} <small style={{color:'#999'}}>{item.time}</small></td>
-                                    <td style={{padding:'12px', fontWeight:'bold'}}>{item.result}</td>
-                                    <td style={{padding:'12px'}}><button onClick={() => goToDetail(item.id)} style={styles.viewDetailBtn}>Xem</button></td>
+                                    
+                                    {/* PHẦN HIỂN THỊ TRẠNG THÁI */}
+                                    <td style={{padding:'12px', fontWeight:'bold', color: getStatusColor(item.status)}}>
+                                        {item.status.includes('Đang') ? 'Đang phân tích...' : item.result}
+                                        {item.status.includes('Đang') && <span style={styles.spinner}> ⏳</span>}
+                                    </td>
+
+                                    <td style={{padding:'12px'}}>
+                                        <button 
+                                            onClick={() => goToDetail(item.id)} 
+                                            style={{...styles.viewDetailBtn, opacity: item.status.includes('Đang') ? 0.6 : 1}}
+                                        >
+                                            Xem
+                                        </button>
+                                    </td>
                                 </tr>
                             ))}
                         </tbody>
@@ -446,7 +470,13 @@ const styles: { [key: string]: React.CSSProperties } = {
     avatarSmall: { width: '28px', height: '28px', borderRadius: '50%', backgroundColor: '#e4e6eb', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', marginRight: '8px', alignSelf: 'flex-end', marginBottom: '8px' },
     chatInputArea: { padding: '12px 16px', display: 'flex', alignItems: 'center', gap: '12px', borderTop: '1px solid #e4e6eb' },
     messengerInput: { flex: 1, backgroundColor: '#f0f2f5', border: 'none', borderRadius: '20px', padding: '9px 16px', fontSize: '15px', outline: 'none' },
-    emptyChatState: { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#65676b', textAlign: 'center' }
+    emptyChatState: { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#65676b', textAlign: 'center' },
+    spinner: { display: 'inline-block', animation: 'spin 2s linear infinite' }
 };
+
+// Animation xoay
+const styleSheet = document.createElement("style");
+styleSheet.innerText = `@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }`;
+document.head.appendChild(styleSheet);
 
 export default Dashboard;

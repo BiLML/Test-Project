@@ -1,4 +1,4 @@
-# --- BỎ QUA FILE HỆ THỐNG & GIT ---
+# --- FILE HỆ THỐNG & GIT ---
 .git
 .gitignore
 .dockerignore
@@ -6,9 +6,10 @@
 Thumbs.db
 .vscode/
 .idea/
+README.md
 
-# --- BỎ QUA MÔI TRƯỜNG ẢO & LOGS ---
-# Docker sẽ tự cài môi trường mới bên trong, không cần copy cái cũ ở máy bạn vào
+# --- MÔI TRƯỜNG & LOGS ---
+# Docker sẽ tự cài môi trường mới, không copy môi trường cũ ở máy bạn vào
 node_modules/
 .venv/
 venv/
@@ -16,23 +17,26 @@ env/
 ENV/
 __pycache__/
 *.py[cod]
-*$py.class
 *.log
 npm-debug.log*
 yarn-debug.log*
 
-# --- BỎ QUA CÁC FILE BUILD FRONTEND ---
-# Docker sẽ tự build lại
+# --- BUILD ARTIFACTS ---
 build/
 dist/
 
 # --- BẢO MẬT ---
-# Không copy file chứa pass vào Image
 .env
 .env.local
 *.pem
 *.key
 
-# --- LƯU Ý QUAN TRỌNG: MODEL AI ---
-# Tôi ĐÃ XÓA các dòng *.keras, *.h5 ở đây.
-# Để Docker có thể COPY file model vào trong container và chạy được.
+# --- TỐI ƯU HÓA AI CHO DOCKER (QUAN TRỌNG) ---
+# 1. KHÔNG copy thư mục backup model (vì Server chỉ chạy ONNX, không cần Keras)
+backup_model_ai/
+
+# 2. KHÔNG copy thư mục tools (vì Server không cần script convert)
+tools/
+
+# 3. KHÔNG copy file requirements.txt nếu nó nằm sai chỗ (nhưng thường ta cần nó)
+# Lưu ý: Docker vẫn sẽ copy thư mục 'ai_onnx' vì ta KHÔNG liệt kê nó ở đây (Đúng ý đồ).
