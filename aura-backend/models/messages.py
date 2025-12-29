@@ -1,5 +1,5 @@
 # aura-backend/models/messages.py
-from typing import Optional   # <--- BẠN ĐANG THIẾU DÒNG QUAN TRỌNG NÀY
+from typing import Optional  
 from pydantic import BaseModel, Field
 from datetime import datetime
 from bson import ObjectId

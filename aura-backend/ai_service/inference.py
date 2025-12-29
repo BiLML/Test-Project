@@ -9,7 +9,8 @@ SEG_INPUT_SIZE = 256
 VESSELS_INPUT_SIZE = 512
 CLS_INPUT_SIZE = 224
 
-ONNX_DIR = 'ai_onnx'
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ONNX_DIR = os.path.join(BASE_DIR, 'ai_onnx')
 MODEL_FILES = {
     'EX': 'EX.onnx', 'HE': 'HE.onnx', 'SE': 'SE.onnx',
     'MA': 'MA.onnx', 'OD': 'OD.onnx', 'Vessels': 'Vessels.onnx',
@@ -254,19 +255,19 @@ def run_aura_inference(image_bytes):
         
         # FORM REPORT (Khớp với ảnh cũ đẹp của bạn)
         report = (
-            f"👁️ RETINAL DIAGNOSIS: {dr_grade}\n"
+            f"RETINAL DIAGNOSIS: {dr_grade}\n"
             f"• Lesion Load: {int(risk_score)} (Severity Score)\n"
             f"• Hemorrhages: {int(findings['HE'])} px | Exudates: {int(findings['EX'] + findings['SE'])} px\n\n"
             
-            f"❤️ CARDIOVASCULAR HEALTH (Estimated):\n"
+            f"CARDIOVASCULAR HEALTH (Estimated):\n"
             f"• Hypertension Risk: {cardio_risk}\n"
             f"• Vessel Density: {vessel_pixels} px\n"
             f"• Analysis: {vessel_status}\n\n"
             
-            f"🩸 DIABETES COMPLICATIONS RISK:\n"
+            f"DIABETES COMPLICATIONS RISK:\n"
             f"• {diabetes_risk}: {diabetes_msg}\n\n"
             
-            f"🧠 STROKE RISK ESTIMATION (Ocular Biomarkers):\n"
+            f"STROKE RISK ESTIMATION (Ocular Biomarkers):\n"
             f"• Risk Level: LOW (Score: {stroke_score}/100)\n"
             f"• Note: No specific ocular risk factors for stroke detected."
         )

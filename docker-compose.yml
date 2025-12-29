@@ -1,7 +1,7 @@
 version: '3.8'
 
 services:
-  # Database
+  # 1. DATABASE
   mongo_db:
     image: mongo:6.0
     container_name: aura_mongo
@@ -10,36 +10,48 @@ services:
     volumes:
       - mongo_data:/data/db
 
-  # Backend (Python + AI)
-  backend:
-    build: ./aura-backend
-    container_name: aura_backend
+  # 2. AI SERVICE
+  ai_service:
+    build: 
+      context: ./aura-backend
+      dockerfile: Dockerfile  # <--- SỬA: Đã xóa chữ 'tools/' đi vì file giờ nằm ở ngoài
+    container_name: aura_ai_core
+    command: python ai_service/main.py 
+    ports:
+      - "8001:8001"
+    env_file:
+      - ./aura-backend/.env 
+    volumes:
+      - ./aura-backend:/app
+
+  # 3. BACKEND CORE
+  backend_core:
+    build: 
+      context: ./aura-backend
+      dockerfile: Dockerfile  # <--- SỬA: Đã xóa chữ 'tools/' đi
+    container_name: aura_backend_api
+    command: uvicorn server.main:app --host 0.0.0.0 --port 8000 --reload
     ports:
       - "8000:8000"
     depends_on:
       - mongo_db
+      - ai_service
+    env_file:
+      - ./aura-backend/.env
     environment:
-      - MONGO_URL=mongodb://mongo_db:27017 # Sửa lại đúng biến trong code python của bạn
-      # Các biến môi trường khác (copy từ .env của bạn vào đây hoặc dùng file .env)
-      - SECRET_KEY=${SECRET_KEY}
-      - CLOUDINARY_CLOUD_NAME=${CLOUDINARY_CLOUD_NAME}
-      - CLOUDINARY_API_KEY=${CLOUDINARY_API_KEY}
-      - CLOUDINARY_API_SECRET=${CLOUDINARY_API_SECRET}
+      - MONGO_URL=mongodb://mongo_db:27017
+      - AI_SERVICE_URL=http://ai_service:8001/analyze 
     volumes:
       - ./aura-backend:/app
-      - /app/ai/__pycache__
-      - /app/server/__pycache__
-      # Quan trọng: Map model từ máy thật vào (nếu bạn không build model vào image)
-      # - ./aura-backend/ai:/app/ai 
 
-  # Frontend (React)
+  # 4. FRONTEND
   frontend:
     build: ./aura-frontend
     container_name: aura_frontend
     ports:
       - "5173:5173"
     depends_on:
-      - backend
+      - backend_core
     volumes:
       - ./aura-frontend:/app
       - /app/node_modules

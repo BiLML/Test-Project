@@ -1,6 +1,6 @@
 import os
 import io
-import requests # type: ignore
+import requests 
 from datetime import datetime, timedelta
 import uuid
 import unicodedata
@@ -17,13 +17,11 @@ import cloudinary
 import cloudinary.uploader
 from bson.objectid import ObjectId
 from pydantic import BaseModel, EmailStr
-import cv2 
 import bcrypt
 
 # --- IMPORT MODULES CỦA DỰ ÁN ---
 from databases import db, init_db
-from ai.inference import run_aura_inference
-from models import User, UserProfile, Message 
+from models import User, UserProfile, Message, MedicalRecord 
 
 # Import thư viện gửi mail
 from fastapi_mail import FastMail, MessageSchema, ConnectionConfig, MessageType
@@ -40,7 +38,7 @@ from fastapi.responses import StreamingResponse
 # --- CẤU HÌNH ---
 load_dotenv()
 app = FastAPI()
-ai_lock = asyncio.Semaphore(2) # CHỐNG NỔ MÁY
+AI_SERVICE_URL = os.getenv("AI_SERVICE_URL", "http://localhost:8001/analyze") # Trỏ tới Service AI
 
 # --- CẤU HÌNH GỬI MAIL (Chỉ khai báo 1 lần ở đây) ---
 conf = ConnectionConfig(
@@ -190,40 +188,66 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
 
 # --- AI LOGIC (Background Task) ---
 # HÀM AI WRAPPER MỚI (CHỐNG LAG)
-async def real_ai_analysis(record_id: str, image_url: str):
-    async with ai_lock: # Xếp hàng chờ nếu server đang bận
-        print(f"🤖 AI AURA bắt đầu phân tích: {record_id}")
-        try:
-            response = requests.get(image_url)
-            if response.status_code != 200: raise Exception("Lỗi tải ảnh Cloudinary")
-            image_bytes = response.content
+# --- Cần thêm import này ở đầu file main.py nếu chưa có ---
+import requests
+import os
 
-            # Chạy AI trong Thread Pool để không chặn API
-            loop = asyncio.get_running_loop()
-            overlay_img, diagnosis_result, detailed_risk = await loop.run_in_executor(
-                None, run_aura_inference, image_bytes
-            )
-            
-            # Encode ảnh kết quả
-            is_success, buffer = cv2.imencode(".png", overlay_img)
-            annotated_file = io.BytesIO(buffer.tobytes())
-            
-            # Upload kết quả
-            upload_result = await loop.run_in_executor(None, lambda: cloudinary.uploader.upload(
-                file=annotated_file, public_id=f"aura_scan_{record_id}", folder="aura_results", resource_type="image"
-            ))
-            annotated_url = upload_result.get("secure_url")
-            
-            await medical_records_collection.update_one(
-                {"_id": ObjectId(record_id)},
-                {"$set": {"ai_analysis_status": "COMPLETED", "ai_result": diagnosis_result, "doctor_note": detailed_risk, "annotated_image_url": annotated_url}}
-            )
-            print(f"✅ Hồ sơ {record_id} hoàn tất.")
-        except Exception as e:
-            print(f"❌ Lỗi AI ({record_id}): {e}")
-            await medical_records_collection.update_one(
-                {"_id": ObjectId(record_id)}, {"$set": {"ai_analysis_status": "FAILED", "ai_result": "Lỗi phân tích"}}
-            )
+# Định nghĩa địa chỉ của AI Service (đang chạy ở port 8001)
+AI_SERVICE_URL = os.getenv("AI_SERVICE_URL", "http://localhost:8001/analyze")
+
+async def real_ai_analysis(record_id: str, image_url: str):
+    # Lưu ý: Không cần dùng 'async with ai_lock' nữa vì server này không chạy AI nặng
+    print(f"📡 Backend Gateway: Đang gửi yêu cầu sang AI Service cho hồ sơ {record_id}")
+    
+    try:
+        # BƯỚC 1: Tải ảnh gốc từ Cloudinary về (để chuẩn bị gửi đi)
+        response = requests.get(image_url)
+        if response.status_code != 200: 
+            raise Exception("Lỗi tải ảnh gốc từ Cloudinary")
+        image_bytes = response.content
+
+        # BƯỚC 2: GỌI SANG AI MICROSERVICE (Giao tiếp qua HTTP)
+        # Gửi file ảnh dưới dạng multipart/form-data
+        files = {
+            'file': ('image.jpg', image_bytes, 'image/jpeg')
+        }
+        
+        # Gọi POST sang localhost:8001/analyze
+        ai_response = requests.post(AI_SERVICE_URL, files=files)
+
+        # Kiểm tra xem AI Service có trả về 200 OK không
+        if ai_response.status_code != 200:
+            raise Exception(f"AI Service báo lỗi: {ai_response.text}")
+
+        # BƯỚC 3: Nhận kết quả JSON từ AI Service
+        result_data = ai_response.json()
+        
+        # Trích xuất dữ liệu (Khớp với model AIResponse bên file ai_service/main.py)
+        diagnosis_result = result_data.get("diagnosis_result")
+        detailed_risk = result_data.get("detailed_risk")
+        annotated_url = result_data.get("annotated_image_url") # AI Service đã upload xong và trả link về
+
+        # BƯỚC 4: Cập nhật Database (Logic giữ nguyên)
+        await medical_records_collection.update_one(
+            {"_id": ObjectId(record_id)},
+            {"$set": {
+                "ai_analysis_status": "COMPLETED", 
+                "ai_result": diagnosis_result, 
+                "doctor_note": detailed_risk, 
+                "annotated_image_url": annotated_url
+            }}
+        )
+        print(f"✅ Hồ sơ {record_id} hoàn tất (Xử lý bởi Microservice).")
+
+    except Exception as e:
+        print(f"❌ Lỗi kết nối Microservice ({record_id}): {e}")
+        await medical_records_collection.update_one(
+            {"_id": ObjectId(record_id)}, 
+            {"$set": {
+                "ai_analysis_status": "FAILED", 
+                "ai_result": "Lỗi hệ thống AI"
+            }}
+        )
 # --- API ENDPOINTS ---
 
 @app.post("/api/register")
@@ -287,6 +311,7 @@ async def get_medical_records(current_user: dict = Depends(get_current_user)):
         })
     return {"history": results}
 
+
 @app.get("/api/medical-records/{record_id}")
 async def get_single_record(record_id: str, current_user: dict = Depends(get_current_user)):
     try:
@@ -309,6 +334,8 @@ async def get_single_record(record_id: str, current_user: dict = Depends(get_cur
     except Exception as e:
         print(f"Lỗi: {e}")
         raise HTTPException(status_code=400, detail="ID không hợp lệ hoặc lỗi server")
+
+
 
 @app.put("/api/medical-records/{record_id}/note")
 async def update_doctor_note(record_id: str, data: DoctorNoteRequest, current_user: dict = Depends(get_current_user)):
@@ -341,6 +368,39 @@ async def assign_doctor(data: AssignDoctorRequest, current_user: dict = Depends(
         return {"message": "Phân công bác sĩ thành công.", "doctor_name": doctor["userName"]}
     except HTTPException as http_err: raise http_err
     except Exception as e: raise HTTPException(status_code=400, detail="Lỗi server.")
+
+# --- THÊM ĐOẠN NÀY VÀO main.py ---
+
+@app.get("/api/medical-records/patient/{patient_id}")
+async def get_patient_history(patient_id: str, current_user: dict = Depends(get_current_user)):
+    # 1. Kiểm tra quyền (Chỉ Bác sĩ hoặc Admin mới được xem lịch sử người khác)
+    if current_user["role"] not in ["DOCTOR", "ADMIN"]:
+        raise HTTPException(status_code=403, detail="Bạn không có quyền xem hồ sơ này.")
+
+    # 2. Tìm tên bệnh nhân (Optional - để hiển thị đẹp hơn nếu cần)
+    patient = await users_collection.find_one({"_id": ObjectId(patient_id)})
+    patient_name = patient.get("full_name") or patient.get("userName") if patient else "Bệnh nhân"
+
+    # 3. Truy vấn Database lấy danh sách hồ sơ
+    # Lưu ý: user_id trong bảng medical_records lưu dưới dạng String
+    cursor = medical_records_collection.find({"user_id": patient_id}).sort("upload_date", -1)
+    
+    records = []
+    async for doc in cursor:
+        records.append({
+            "id": str(doc["_id"]),
+            "date": doc["upload_date"].strftime("%d/%m/%Y"), 
+            "time": doc["upload_date"].strftime("%H:%M"),     
+            "result": doc.get("ai_result", "Chưa có kết quả"),
+            "doctor_note": doc.get("doctor_note", ""),
+            "status": "Hoàn thành" if doc.get("ai_analysis_status") == "COMPLETED" else "Đang xử lý",
+            "image_url": doc.get("image_url", "")
+        })
+    
+    return {
+        "patient_name": patient_name,
+        "records": records
+    }
 
 @app.post("/api/google-login")
 async def google_login(data: GoogleLoginRequest):

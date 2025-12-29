@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { FaPaperPlane, FaUserMd, FaUsers, FaClipboardList, FaCommentDots } from 'react-icons/fa';
+import { FaPaperPlane, FaUserMd, FaUsers, FaClipboardList, FaCommentDots, FaSearch } from 'react-icons/fa';
 import ProfileDr from './ProfileDr';
+import { FaTimes, FaHistory } from 'react-icons/fa'; // Import thêm icon nếu cần
 
 // --- Dashboard Component (Bác sĩ) ---
 const DashboardDr: React.FC = () => {
@@ -34,6 +35,14 @@ const DashboardDr: React.FC = () => {
     const notificationRef = useRef<HTMLDivElement>(null);
     const profileRef = useRef<HTMLDivElement>(null);
 
+    // --- STATE CHO MODAL LỊCH SỬ ---
+    const [showHistoryModal, setShowHistoryModal] = useState(false);
+    const [historyRecords, setHistoryRecords] = useState<any[]>([]);
+    const [historyLoading, setHistoryLoading] = useState(false);
+    const [selectedPatientName, setSelectedPatientName] = useState('');
+
+    const [searchTerm, setSearchTerm] = useState('');
+    const [riskFilter, setRiskFilter] = useState('ALL'); // Giá trị mặc định là 'ALL' (Tất cả)
     // --- 1. HÀM TẢI DANH SÁCH CHAT (QUAN TRỌNG: ĐÃ THÊM LOGIC MERGE) ---
     const fetchChatData = useCallback(async (token: string) => {
     try {
@@ -74,6 +83,37 @@ const DashboardDr: React.FC = () => {
         }
     } catch (error) { console.error("Lỗi chat:", error); }
 }, [patientsData]);
+
+// --- HÀM MỞ MODAL VÀ TẢI LỊCH SỬ ---
+    const handleViewHistory = async (patientId: string, name: string) => {
+        setShowHistoryModal(true);
+        setSelectedPatientName(name);
+        setHistoryLoading(true);
+        setHistoryRecords([]); // Reset dữ liệu cũ
+
+        const token = localStorage.getItem('token');
+        if (!token) return;
+
+        try {
+            // Giả sử API lấy danh sách là /api/medical-records/patient/{id}
+            // Bạn cần đảm bảo Backend có endpoint này
+            const res = await fetch(`http://127.0.0.1:8000/api/medical-records/patient/${patientId}`, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+
+            if (res.ok) {
+                const data = await res.json();
+                // Nếu API trả về { records: [...] }
+                setHistoryRecords(data.records || []); 
+            } else {
+                alert("Không thể tải lịch sử khám.");
+            }
+        } catch (error) {
+            console.error("Lỗi tải lịch sử:", error);
+        } finally {
+            setHistoryLoading(false);
+        }
+    };
 
     // --- 2. HÀM TẢI LỊCH SỬ TIN NHẮN ---
     const fetchMessageHistory = async (partnerId: string) => {
@@ -357,10 +397,74 @@ const DashboardDr: React.FC = () => {
         }
 
         // --- Tab QUẢN LÝ BỆNH NHÂN ---
+// --- Tab QUẢN LÝ BỆNH NHÂN ---
         if (activeTab === 'patients') {
+            // 1. LOGIC LỌC
+            const filteredPatients = patientsData.filter(p => {
+                // A. Lọc theo Tên/Email/SĐT
+                const term = searchTerm.toLowerCase();
+                const name = (p.userName || '').toLowerCase();
+                const fullName = (p.full_name || '').toLowerCase();
+                const email = (p.email || '').toLowerCase();
+                const phone = (p.phone || '').toLowerCase();
+                
+                const matchesSearch = name.includes(term) || fullName.includes(term) || email.includes(term) || phone.includes(term);
+
+                // B. Lọc theo Mức độ rủi ro (Dropdown)
+                const result = (p.latest_scan?.result || '').toLowerCase();
+                let matchesRisk = true;
+
+                if (riskFilter !== 'ALL') {
+                    if (riskFilter === 'SAFE') {
+                        matchesRisk = result.includes('safe') || result.includes('bình thường') || result.includes('no significant');
+                    } else if (riskFilter === 'MILD') {
+                        matchesRisk = result.includes('mild') || result.includes('nhẹ') || result.includes('early');
+                    } else if (riskFilter === 'MODERATE') {
+                        matchesRisk = result.includes('moderate') || result.includes('trung bình');
+                    } else if (riskFilter === 'SEVERE') {
+                        matchesRisk = result.includes('severe') || result.includes('nặng') || result.includes('danger');
+                    } else if (riskFilter === 'PROLIFERATIVE') {
+                        matchesRisk = result.includes('proliferative') || result.includes('tăng sinh');
+                    }
+                }
+
+                return matchesSearch && matchesRisk;
+            });
+
             return (
                 <div style={styles.contentContainer}>
-                    <h2 style={{ marginBottom: '20px', color: '#333' }}>🧑‍⚕️ Danh sách Bệnh nhân được phân công ({patientsData.length})</h2>
+                    <h2 style={{ marginBottom: '20px', color: '#333' }}>🧑‍⚕️ Danh sách Bệnh nhân ({filteredPatients.length})</h2>
+
+                    {/* --- THANH CÔNG CỤ TÌM KIẾM & LỌC --- */}
+                    <div style={styles.filterToolbar}>
+                        {/* Ô TÌM KIẾM */}
+                        <div style={styles.searchBox}>
+                            <FaSearch style={styles.searchIcon} />
+                            <input 
+                                type="text" 
+                                placeholder="Tên hoặc ID" 
+                                value={searchTerm}
+                                onChange={(e) => setSearchTerm(e.target.value)}
+                                style={styles.searchInput}
+                            />
+                        </div>
+
+                        {/* DROPDOWN MỨC ĐỘ */}
+                        <select 
+                            value={riskFilter} 
+                            onChange={(e) => setRiskFilter(e.target.value)}
+                            style={styles.filterSelect}
+                        >
+                            <option value="ALL">Tất cả mức độ</option>
+                            <option value="SAFE">Bình thường</option>
+                            <option value="MILD">Nhẹ (Early)</option>
+                            <option value="MODERATE">Trung bình</option>
+                            <option value="SEVERE">Nặng (Severe)</option>
+                            <option value="PROLIFERATIVE">Tăng sinh (Proliferative)</option>
+                        </select>
+                    </div>
+
+                    {/* BẢNG DỮ LIỆU */}
                     <table style={styles.table}>
                         <thead>
                             <tr style={{ borderBottom: '2px solid #eee', textAlign: 'left' }}>
@@ -372,45 +476,57 @@ const DashboardDr: React.FC = () => {
                             </tr>
                         </thead>
                         <tbody>
-                            {patientsData.map(p => {
-                                 const statusInfo = getStatusBadge(p.latest_scan?.ai_status || 'NA');
-                                 const isDisabled = !p.latest_scan?.record_id || p.latest_scan.ai_status !== 'COMPLETED';
-                                 return (
-                                    <tr key={p.id} style={{borderBottom: '1px solid #f0f0f0'}}>
-                                        <td style={{padding: '12px', fontWeight: 'bold', color: '#333'}}>{p.userName}</td>
-                                        <td style={{padding: '12px', color: '#555'}}>{p.email}<br/><small>{p.phone}</small></td>
-                                        <td style={{padding: '12px'}}>
-                                            {p.latest_scan?.result ? (
-                                                <span style={{color: p.latest_scan.result.includes('Nặng') ? '#dc3545' : '#28a745', fontWeight: 'bold'}}>
-                                                    {p.latest_scan.result}
+                            {filteredPatients.length > 0 ? (
+                                filteredPatients.map(p => {
+                                    const statusInfo = getStatusBadge(p.latest_scan?.ai_status || 'NA');
+                                    return (
+                                        <tr key={p.id} style={{borderBottom: '1px solid #f0f0f0'}}>
+                                            <td style={{padding: '12px', fontWeight: 'bold', color: '#333'}}>
+                                                {p.full_name || p.userName}
+                                            </td>
+                                            <td style={{padding: '12px', color: '#555'}}>{p.email}<br/><small>{p.phone}</small></td>
+                                            <td style={{padding: '12px'}}>
+                                                {p.latest_scan?.result ? (
+                                                    <span style={{
+                                                        color: p.latest_scan.result.toLowerCase().includes('nặng') || p.latest_scan.result.toLowerCase().includes('severe') ? '#dc3545' : 
+                                                               p.latest_scan.result.toLowerCase().includes('moderate') ? '#fd7e14' : '#28a745', 
+                                                        fontWeight: 'bold'
+                                                    }}>
+                                                        {p.latest_scan.result}
+                                                    </span>
+                                                ) : <span style={{color: '#999'}}>Chưa khám</span>}
+                                            </td>
+                                            <td style={{padding: '12px'}}>
+                                                <span style={{...styles.statusBadge, backgroundColor: statusInfo.color, color: 'white'}}>
+                                                    {statusInfo.text}
                                                 </span>
-                                            ) : <span style={{color: '#999'}}>Chưa khám</span>}
-                                        </td>
-                                        <td style={{padding: '12px'}}>
-                                            <span style={{...styles.statusBadge, backgroundColor: statusInfo.color, color: 'white'}}>
-                                                {statusInfo.text}
-                                            </span>
-                                        </td>
-                                        <td style={{padding: '12px'}}>
-                                            <div style={{display:'flex', gap:'5px'}}>
-                                                <button 
-                                                    style={{...styles.reviewBtn, backgroundColor: '#3498db'}}
-                                                    onClick={() => { setActiveTab('chat'); openChat(p.id); }}
-                                                >
-                                                    Nhắn tin
-                                                </button>
-                                                <button 
-                                                    style={{...styles.reviewBtn, backgroundColor: '#2ecc71', opacity: isDisabled ? 0.6 : 1, cursor: isDisabled ? 'not-allowed' : 'pointer'}}
-                                                    onClick={() => goToReviewDetail(p.latest_scan?.record_id || '')}
-                                                    disabled={isDisabled}
-                                                >
-                                                    Xem HS
-                                                </button>
-                                            </div>
-                                        </td>
-                                    </tr>
-                                );
-                            })}
+                                            </td>
+                                            <td style={{padding: '12px'}}>
+                                                <div style={{display:'flex', gap:'5px'}}>
+                                                    <button 
+                                                        style={{...styles.reviewBtn, backgroundColor: '#3498db'}}
+                                                        onClick={() => { setActiveTab('chat'); openChat(p.id); }}
+                                                    >
+                                                        Nhắn tin
+                                                    </button>
+                                                    <button 
+                                                        style={{...styles.reviewBtn, backgroundColor: '#2ecc71', cursor: 'pointer'}}
+                                                        onClick={() => handleViewHistory(p.id, p.full_name || p.userName)}
+                                                    >
+                                                        Xem HS
+                                                    </button>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    );
+                                })
+                            ) : (
+                                <tr>
+                                    <td colSpan={5} style={{textAlign: 'center', padding: '30px', color: '#888'}}>
+                                        Không tìm thấy bệnh nhân nào phù hợp.
+                                    </td>
+                                </tr>
+                            )}
                         </tbody>
                     </table>
                 </div>
@@ -523,7 +639,60 @@ const DashboardDr: React.FC = () => {
                 </header>
 
                 {renderContent()}
-            </main>
+                {/* --- MODAL LỊCH SỬ KHÁM --- */}
+            {showHistoryModal && (
+                <div style={styles.modalOverlay}>
+                    <div style={styles.modalContent}>
+                        <div style={styles.modalHeader}>
+                            <h3 style={{margin: 0}}>Hồ sơ: {selectedPatientName}</h3>
+                            <button onClick={() => setShowHistoryModal(false)} style={styles.closeBtn}><FaTimes/></button>
+                        </div>
+                        
+                        <div style={styles.modalBody}>
+                            {historyLoading ? (
+                                <div style={{textAlign: 'center', padding: '20px'}}>Đang tải dữ liệu...</div>
+                            ) : historyRecords.length === 0 ? (
+                                <p style={{textAlign: 'center', color: '#666'}}>Bệnh nhân này chưa có lịch sử khám nào.</p>
+                            ) : (
+                                <table style={styles.historyTable}>
+                                    <thead>
+                                        <tr style={{background: '#f8f9fa', color: '#555'}}>
+                                            <th style={{padding: '10px', textAlign: 'left'}}>Ngày/Giờ</th>
+                                            <th style={{padding: '10px', textAlign: 'left'}}>Kết quả AI</th>
+                                            <th style={{padding: '10px', textAlign: 'left'}}>Ghi chú BS</th>
+                                            <th style={{padding: '10px', textAlign: 'center'}}>Chi tiết</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {historyRecords.map((rec, idx) => (
+                                            <tr key={idx} style={{borderBottom: '1px solid #eee'}}>
+                                                <td style={{padding: '10px', fontSize: '14px'}}>
+                                                    {rec.date}<br/><small style={{color:'#888'}}>{rec.time}</small>
+                                                </td>
+                                                <td style={{padding: '10px', fontSize: '14px', fontWeight: 'bold', color: rec.result.includes('Nặng') ? 'red' : 'green'}}>
+                                                    {rec.result}
+                                                </td>
+                                                <td style={{padding: '10px', fontSize: '13px', maxWidth: '200px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'}}>
+                                                    {rec.doctor_note || '--'}
+                                                </td>
+                                                <td style={{padding: '10px', textAlign: 'center'}}>
+                                                    <button 
+                                                        onClick={() => navigate(`/result/${rec.id}`)}
+                                                        style={{...styles.reviewBtn, backgroundColor: '#3498db', fontSize: '12px'}}
+                                                    >
+                                                        Xem
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
+            </main>    
         </div>
     );
 };
@@ -583,7 +752,86 @@ const styles: { [key: string]: React.CSSProperties } = {
     avatarSmall: { width: '28px', height: '28px', borderRadius: '50%', backgroundColor: '#e4e6eb', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', marginRight: '8px', alignSelf: 'flex-end', marginBottom: '8px' },
     chatInputArea: { padding: '12px 16px', display: 'flex', alignItems: 'center', gap: '12px', borderTop: '1px solid #e4e6eb' },
     messengerInput: { flex: 1, backgroundColor: '#f0f2f5', border: 'none', borderRadius: '20px', padding: '9px 16px', fontSize: '15px', outline: 'none' },
-    emptyChatState: { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#65676b', textAlign: 'center' }
+    emptyChatState: { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#65676b', textAlign: 'center' },
+
+    // --- MODAL STYLES ---
+    modalOverlay: {
+        position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+        backgroundColor: 'rgba(0, 0, 0, 0.5)',
+        display: 'flex', justifyContent: 'center', alignItems: 'center',
+        zIndex: 2000 // Đảm bảo nổi lên trên cùng
+    },
+    modalContent: {
+        backgroundColor: 'white',
+        width: '600px',
+        maxHeight: '80vh',
+        borderRadius: '12px',
+        boxShadow: '0 5px 15px rgba(0,0,0,0.3)',
+        display: 'flex', flexDirection: 'column',
+        overflow: 'hidden'
+    },
+    modalHeader: {
+        padding: '15px 20px',
+        borderBottom: '1px solid #eee',
+        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+        backgroundColor: '#f8f9fa'
+    },
+    modalBody: {
+        padding: '20px',
+        overflowY: 'auto'
+    },
+    closeBtn: {
+        background: 'none', border: 'none', fontSize: '18px', cursor: 'pointer', color: '#666'
+    },
+    historyTable: {
+        width: '100%', borderCollapse: 'collapse'
+    },
+
+    // --- STYLE CHO THANH CÔNG CỤ (NEW) ---
+    filterToolbar: {
+        display: 'flex',
+        gap: '15px',
+        marginBottom: '25px',
+        alignItems: 'center'
+    },
+    searchBox: {
+        display: 'flex',
+        alignItems: 'center',
+        backgroundColor: '#f8f9fa',
+        border: '1px solid #ced4da',
+        borderRadius: '8px',
+        padding: '10px 15px',
+        flex: 2, // Chiếm phần lớn chiều rộng
+        transition: '0.2s',
+        boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.03)'
+    },
+    searchIcon: {
+        color: '#adb5bd',
+        marginRight: '10px',
+        fontSize: '16px'
+    },
+    searchInput: {
+        border: 'none',
+        background: 'transparent',
+        outline: 'none',
+        flex: 1,
+        fontSize: '14px',
+        color: '#495057'
+    },
+    filterSelect: {
+        flex: 1, // Chiếm phần còn lại
+        maxWidth: '250px',
+        padding: '10px 15px',
+        borderRadius: '8px',
+        border: '1px solid #ced4da',
+        backgroundColor: 'white',
+        fontSize: '14px',
+        color: '#495057',
+        cursor: 'pointer',
+        outline: 'none',
+        fontWeight: '500',
+        height: '42px' // Cân bằng chiều cao với ô search
+    },
 };
 
 export default DashboardDr;
