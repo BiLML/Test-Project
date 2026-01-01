@@ -31,6 +31,7 @@ const Login = () => {
             
             if (standardizedRole === 'admin') navigate('/admin', { replace: true });
             else if (standardizedRole === 'doctor') navigate('/dashboarddr', { replace: true });
+            else if (standardizedRole === 'clinic_owner') navigate('/clinic-dashboard', { replace: true });
             else navigate('/dashboard', { replace: true });
         }
     };

@@ -4,6 +4,7 @@ import Login from './Login';
 import Dashboard from './dashboard';
 import DashboardDr from './dashboarddr';
 import DashboardAdmin from './DashboardAdmin'; 
+import ClinicDashboard from './ClinicDashboard';
 import './App.css';
 import Register from './Register';
 import Upload from './Upload';
@@ -54,6 +55,10 @@ const DefaultRedirect: React.FC = () => {
     if (role === 'doctor') {
         return <Navigate to="/dashboarddr" replace />;
     }
+
+    if (role === 'clinic_owner') {
+        return <Navigate to="/clinic-dashboard" replace />;
+    }
     
     // Mặc định là USER hoặc Guest (nếu chưa đăng ký)
     return <Navigate to="/dashboard" replace />;
@@ -69,7 +74,9 @@ const App: React.FC = () => {
                     <Route path="/register" element={<Register />} />
                     <Route path="/forgot-password" element={<ForgotPassword />} />
                     {/* 2. Các trang Bảo mật (Protected Routes) */}
-                    <Route path="/dashboard" element={<ProtectedRoute element={<Dashboard />} />} />
+                    <Route path="/dashboard" element={<Dashboard />} />
+                    <Route path="/admin" element={<DashboardAdmin />} />
+                    <Route path="/clinic-dashboard" element={<ClinicDashboard />} />
                     <Route path="/dashboarddr" element={<ProtectedRoute element={<DashboardDr />} />} />
                     <Route path="/profile-dr" element={<ProtectedRoute element={<ProfileDr />} />} />
                     <Route path="/upload" element={<ProtectedRoute element={<Upload />} />} />
@@ -78,7 +85,7 @@ const App: React.FC = () => {
                     <Route path="/profile" element={<ProtectedRoute element={<ProfilePage />} />} />
                     <Route path="/reset-password" element={<ResetPassword />} />
                     {/* ROUTE CHO ADMIN DASHBOARD */}
-                    <Route path="/admin" element={<ProtectedRoute element={<DashboardAdmin />} />} />
+                    <Route path="/admin" element={<DashboardAdmin />} />
                     
                     {/* 3. Trang mặc định: Sử dụng component DefaultRedirect độc lập */}
                     <Route 

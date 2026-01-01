@@ -8,7 +8,7 @@ import asyncio
 
 # --- THIRD PARTY LIBS ---
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Depends, status, File, UploadFile, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Depends, status, File, UploadFile, BackgroundTasks, Form
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List # List cho kiểu dữ liệu Pydantic
 from fastapi.security import OAuth2PasswordBearer
@@ -70,6 +70,7 @@ async def startup_event():
 users_collection = db.users
 medical_records_collection = db.medical_records
 messages_collection = db.messages
+clinics_collection = db.clinics
 
 # Cấu hình Bảo mật
 SECRET_KEY = os.getenv("SECRET_KEY")
@@ -138,6 +139,14 @@ class ForgotPasswordRequest(BaseModel):
 class ResetPasswordRequest(BaseModel):
     token: str
     new_password: str
+
+class CreateDoctorRequest(BaseModel):
+    userName: str
+    password: str
+    full_name: str
+    email: str = None
+    phone: str = None
+    patient_ids: List[str] = []
 
 # --- HÀM XỬ LÝ TIẾNG VIỆT ---
 def remove_accents(input_str):
@@ -850,3 +859,212 @@ async def upload_eye_images(
         except Exception as e: print(f"Lỗi upload: {e}")
             
     return {"message": f"Đã nhận {len(results)} ảnh", "data": results}
+
+# --- IMPORTS CẦN THIẾT (Nếu chưa có ở đầu file thì bổ sung) ---
+# from fastapi import Form, File, UploadFile
+# from bson.objectid import ObjectId
+# from datetime import datetime
+
+# ==========================================
+# CÁC API DÀNH CHO QUẢN LÝ PHÒNG KHÁM
+# ==========================================
+
+# --- 1. API ĐĂNG KÝ PHÒNG KHÁM (USER) ---
+@app.post("/api/clinics/register")
+async def register_clinic(
+    clinicName: str = Form(...),
+    address: str = Form(...),
+    phone: str = Form(...),
+    license: str = Form(...),
+    description: str = Form(None),
+    license_image_front: UploadFile = File(None),
+    license_image_back: UploadFile = File(None),
+    current_user: dict = Depends(get_current_user)
+):
+    try:
+        front_url, back_url = None, None
+        
+        # Upload ảnh lên Cloudinary
+        if license_image_front:
+            res = cloudinary.uploader.upload(license_image_front.file, folder="aura_clinics_license")
+            front_url = res.get("secure_url")
+        if license_image_back:
+            res = cloudinary.uploader.upload(license_image_back.file, folder="aura_clinics_license", resource_type='auto')
+            back_url = res.get("secure_url")
+
+        new_clinic = {
+            "owner_id": str(current_user["id"]),      # ID Bác sĩ
+            "owner_name": current_user["userName"],   
+            "name": clinicName,                       # Tên phòng khám
+            "address": address,
+            "phone": phone,
+            "license_number": license,
+            "description": description,
+            "license_images": { "front": front_url, "back": back_url },
+            "status": "PENDING",
+            "created_at": datetime.utcnow()
+        }
+        
+        # MongoDB tự sinh _id cho phòng khám
+        res = await clinics_collection.insert_one(new_clinic)
+        return {"message": "Đăng ký thành công", "clinic_id": str(res.inserted_id)}
+    except Exception as e:
+        print(f"Lỗi: {e}")
+        raise HTTPException(500, "Lỗi Server")
+
+# --- 2. API LẤY DANH SÁCH CHỜ DUYỆT (ADMIN) ---
+@app.get("/api/admin/clinics/pending")
+async def get_pending_clinics(current_user: dict = Depends(get_current_user)):
+    if current_user["role"] != "ADMIN": raise HTTPException(403, "Cấm truy cập")
+    
+    cursor = clinics_collection.find({"status": "PENDING"}).sort("created_at", -1)
+    clinics = []
+    async for doc in cursor:
+        clinics.append({
+            "id": str(doc["_id"]),  # ID phòng khám để Admin bấm duyệt
+            "name": doc.get("name"),
+            "owner_name": doc.get("owner_name"),
+            "owner_id": doc.get("owner_id"),
+            "phone": doc.get("phone"),
+            "address": doc.get("address"),
+            "license_number": doc.get("license_number"),
+            "images": doc.get("license_images"),
+            "created_at": doc["created_at"].strftime("%d/%m/%Y %H:%M")
+        })
+    return {"requests": clinics}
+
+# --- 3. API DUYỆT PHÒNG KHÁM & NÂNG CẤP ROLE (ADMIN) ---
+class ClinicStatusUpdate(BaseModel):
+    status: str 
+
+@app.put("/api/admin/clinics/{clinic_id}/status")
+async def update_clinic_status(clinic_id: str, data: ClinicStatusUpdate, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] != "ADMIN": raise HTTPException(403, "Cấm truy cập")
+    if data.status not in ["APPROVED", "REJECTED"]: raise HTTPException(400, "Sai trạng thái")
+
+    # 1. Update Status Phòng khám
+    clinic = await clinics_collection.find_one_and_update(
+        {"_id": ObjectId(clinic_id)},
+        {"$set": {"status": data.status}},
+        return_document=True
+    )
+    if not clinic: raise HTTPException(404, "Không tìm thấy phòng khám")
+
+    # 2. Nếu Duyệt -> Nâng cấp User lên CLINIC_OWNER
+    if data.status == "APPROVED":
+        await users_collection.update_one(
+            {"_id": ObjectId(clinic["owner_id"])},
+            {"$set": {
+                "role": "CLINIC_OWNER",        # Role mới
+                "clinic_id": str(clinic["_id"])
+            }}
+        )
+    return {"message": "Đã cập nhật trạng thái"}
+
+# --- 4. API DỮ LIỆU DASHBOARD CHỦ PHÒNG KHÁM ---
+@app.get("/api/clinic/dashboard-data")
+async def get_clinic_dashboard_data(current_user: dict = Depends(get_current_user)):
+    if current_user["role"] not in ["CLINIC_OWNER", "DOCTOR"]: 
+        raise HTTPException(403, "Quyền bị từ chối")
+
+    # Lấy thông tin phòng khám
+    clinic = await clinics_collection.find_one({"owner_id": current_user["id"]})
+    
+    # Lấy bệnh nhân được gán
+    patients = []
+    async for p in users_collection.find({"assigned_doctor_id": current_user["id"]}):
+        last_rec = await medical_records_collection.find_one({"user_id": str(p["_id"])}, sort=[("upload_date", -1)])
+        patients.append({
+            "id": str(p["_id"]),
+            "full_name": p.get("full_name") or p.get("userName"),
+            "phone": p.get("phone", "N/A"),
+            "last_result": last_rec.get("ai_result", "Chưa khám") if last_rec else "Chưa khám"
+        })
+
+    return {
+        "doctor": {"name": current_user.get("full_name"), "email": current_user.get("email")},
+        "clinic": clinic and {
+            "name": clinic.get("name"), 
+            "address": clinic.get("address"), 
+            "license": clinic.get("license_number")
+        },
+        "patients": patients
+    }
+
+@app.get("/api/clinic/doctors")
+async def get_clinic_doctors(current_user: dict = Depends(get_current_user)):
+    # Chỉ Chủ phòng khám mới xem được nhân viên của mình
+    if current_user["role"] != "CLINIC_OWNER":
+        raise HTTPException(403, "Quyền bị từ chối")
+    
+    clinic_id = current_user.get("clinic_id")
+    if not clinic_id: raise HTTPException(400, "Tài khoản chưa liên kết phòng khám")
+
+    # Tìm user có role DOCTOR và clinic_id trùng khớp
+    cursor = users_collection.find({"clinic_id": clinic_id, "role": "DOCTOR"})
+    doctors = []
+    
+    async for doc in cursor:
+        doc_id = str(doc["_id"])
+        
+        # --- LOGIC MỚI: TÌM BỆNH NHÂN ĐƯỢC PHÂN CÔNG ---
+        # Tìm những user có assigned_doctor_id bằng ID của bác sĩ này
+        patients_cursor = users_collection.find({"assigned_doctor_id": doc_id})
+        patient_names = []
+        async for p in patients_cursor:
+            # Lấy tên hiển thị (Full name hoặc userName)
+            p_name = p.get("full_name") or p.get("userName")
+            patient_names.append(p_name)
+        # -----------------------------------------------
+
+        doctors.append({
+            "id": doc_id,
+            "userName": doc["userName"],
+            "full_name": doc.get("full_name"),
+            "email": doc.get("email"),
+            "phone": doc.get("phone"),
+            "status": doc.get("status", "ACTIVE"),
+            "assigned_patients": patient_names # <--- Trả về danh sách tên bệnh nhân
+        })
+        
+    return {"doctors": doctors}
+
+# [Tìm API create_clinic_doctor cũ và THAY THẾ bằng đoạn này]
+@app.post("/api/clinic/create-doctor")
+async def create_clinic_doctor(data: CreateDoctorRequest, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] != "CLINIC_OWNER":
+        raise HTTPException(403, "Chỉ chủ phòng khám mới được thêm bác sĩ")
+    
+    clinic_id = current_user.get("clinic_id")
+    
+    # 1. Kiểm tra username trùng
+    exist = await users_collection.find_one({"userName": data.userName})
+    if exist: raise HTTPException(400, "Tên tài khoản đã tồn tại")
+
+    # 2. Tạo User Bác sĩ mới
+    new_doctor = {
+        "userName": data.userName,
+        "password": get_password_hash(data.password),
+        "full_name": data.full_name,
+        "email": data.email,
+        "phone": data.phone,
+        "role": "DOCTOR",
+        "clinic_id": clinic_id,
+        "created_at": datetime.utcnow(),
+        "status": "ACTIVE"
+    }
+    
+    result = await users_collection.insert_one(new_doctor)
+    new_doctor_id = str(result.inserted_id)
+
+    # 3. LOGIC MỚI: TỰ ĐỘNG GÁN BỆNH NHÂN (NẾU CÓ CHỌN)
+    if data.patient_ids and len(data.patient_ids) > 0:
+        # Chuyển đổi list string ID sang ObjectId để query MongoDB
+        object_ids = [ObjectId(pid) for pid in data.patient_ids]
+        
+        await users_collection.update_many(
+            {"_id": {"$in": object_ids}}, # Tìm những bệnh nhân trong danh sách gửi lên
+            {"$set": {"assigned_doctor_id": new_doctor_id}} # Gán cho bác sĩ mới
+        )
+
+    return {"message": f"Tạo bác sĩ thành công và đã gán {len(data.patient_ids)} bệnh nhân."}

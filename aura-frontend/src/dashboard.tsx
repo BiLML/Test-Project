@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { FaPaperPlane } from 'react-icons/fa';
+import { FaPaperPlane, FaCloudUploadAlt, FaTrash, FaImage, FaFileAlt } from 'react-icons/fa';
 
 // --- Dashboard Component ---
 const Dashboard: React.FC = () => {
@@ -28,9 +28,29 @@ const Dashboard: React.FC = () => {
     const [showNotifications, setShowNotifications] = useState(false);
     const [hasViewedNotifications, setHasViewedNotifications] = useState(false);
 
+    // --- STATE FORM ĐĂNG KÝ ---
+    const [clinicForm, setClinicForm] = useState({
+        name: '',
+        address: '',
+        phone: '',
+        license: '',
+        description: ''
+    });
+    const [isSubmittingClinic, setIsSubmittingClinic] = useState(false);
+    
     // Refs
     const notificationRef = useRef<HTMLDivElement>(null);
     const profileRef = useRef<HTMLDivElement>(null);
+
+    // State ảnh upload
+    const [clinicImages, setClinicImages] = useState<{ front: File | null, back: File | null }>({ 
+        front: null, 
+        back: null 
+    });
+    const [previewImages, setPreviewImages] = useState<{ front: string | null, back: string | null }>({ 
+        front: null, 
+        back: null 
+    });
 
     // --- 1. HÀM TẢI DANH SÁCH CHAT ---
     const fetchChatData = useCallback(async () => {
@@ -63,7 +83,7 @@ const Dashboard: React.FC = () => {
         } catch (error) { console.error("Lỗi chat:", error); }
     }, []);
 
-    // --- 2. HÀM TẢI LỊCH SỬ KHÁM (QUAN TRỌNG: Đã thêm useCallback) ---
+    // --- 2. HÀM TẢI LỊCH SỬ KHÁM ---
     const fetchMedicalRecords = useCallback(async () => {
         const token = localStorage.getItem('token');
         if (!token) return;
@@ -101,6 +121,25 @@ const Dashboard: React.FC = () => {
         if (msgs) setCurrentMessages(msgs);
         fetchChatData(); 
     };
+    const checkRoleAndRedirect = useCallback(async () => {
+        const token = localStorage.getItem('token');
+        if (!token) return;
+        try {
+            const res = await fetch('http://127.0.0.1:8000/api/users/me', { headers: { 'Authorization': `Bearer ${token}` }});
+            if (res.ok) {
+                const data = await res.json();
+                const currentRole = data.user_info.role;
+                
+                // NẾU LÊN ROLE MỚI -> CHUYỂN TRANG
+                if (currentRole === 'CLINIC_OWNER') {
+                     alert("🎉 Hồ sơ đã được duyệt! Chuyển hướng...");
+                     navigate('/clinic-dashboard', { replace: true });
+                }
+                if (currentRole !== userRole) setUserRole(currentRole);
+            }
+        } catch (e) {}
+    }, [navigate, userRole]);
+
 
     // --- 4. GỬI TIN NHẮN ---
     const handleSendMessage = async (e: React.FormEvent) => {
@@ -148,25 +187,91 @@ const Dashboard: React.FC = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }, [currentMessages]);
 
-    // --- 5. POLLING TỰ ĐỘNG (Đã sửa: Cập nhật cả Chat và Bệnh án) ---
+    // --- HÀM XỬ LÝ CHỌN ẢNH ---
+    const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>, type: 'front' | 'back') => {
+        if (e.target.files && e.target.files[0]) {
+            const file = e.target.files[0];
+            
+            // Nếu là ảnh thì tạo preview, nếu là file khác thì không cần (logic render sẽ tự xử lý)
+            let objectUrl: string | null = null;
+            if (file.type.startsWith('image/')) {
+                 objectUrl = URL.createObjectURL(file);
+            }
+
+            setClinicImages(prev => ({ ...prev, [type]: file }));
+            setPreviewImages(prev => ({ ...prev, [type]: objectUrl }));
+        }
+    };
+
+    const removeImage = (type: 'front' | 'back') => {
+        setClinicImages(prev => ({ ...prev, [type]: null }));
+        setPreviewImages(prev => ({ ...prev, [type]: null }));
+    };
+
+    // --- HÀM ĐĂNG KÝ PHÒNG KHÁM (Dùng FormData) ---
+    const handleClinicSubmit = async (e: React.FormEvent) => {
+        e.preventDefault();
+        setIsSubmittingClinic(true);
+        const token = localStorage.getItem('token');
+    
+        try {
+            // KHỞI TẠO FORMDATA ĐỂ GỬI FILE
+            const formData = new FormData();
+            formData.append('name', clinicForm.name);
+            formData.append('address', clinicForm.address);
+            formData.append('phone', clinicForm.phone);
+            formData.append('license', clinicForm.license);
+            formData.append('description', clinicForm.description);
+
+            // Đính kèm ảnh nếu có
+            if (clinicImages.front) formData.append('license_image_front', clinicImages.front);
+            if (clinicImages.back) formData.append('license_image_back', clinicImages.back);
+
+            const res = await fetch('http://127.0.0.1:8000/api/clinics/register', {
+                method: 'POST',
+                headers: { 
+                    'Authorization': `Bearer ${token}`
+                },
+                body: formData
+            });
+
+            if (res.ok) {
+                alert("Gửi yêu cầu đăng ký và hồ sơ chứng thực thành công!");
+                setClinicForm({ name: '', address: '', phone: '', license: '', description: '' }); 
+                setClinicImages({ front: null, back: null });
+                setPreviewImages({ front: null, back: null });
+            } else {
+                alert("Có lỗi xảy ra, vui lòng thử lại sau.");
+            }
+        } catch (error) {
+            console.error("Lỗi đăng ký:", error);
+            alert("Lỗi kết nối server!");
+        } finally {
+            setIsSubmittingClinic(false);
+        }
+    };
+
+    // --- 5. POLLING TỰ ĐỘNG ---
     useEffect(() => {
         const interval = setInterval(async () => {
-             // 1. Cập nhật danh sách chat
+             // 1. Fetch Chat & Lịch sử (Logic cũ)
              fetchChatData(); 
-             
-             // 2. Cập nhật kết quả khám (ĐÂY LÀ DÒNG QUAN TRỌNG MỚI THÊM)
              fetchMedicalRecords();
-
-             // 3. Cập nhật tin nhắn trong phòng chat
+             
+             // 2. Fetch tin nhắn chi tiết (Logic cũ)
              if (selectedChatId && selectedChatId !== 'system') {
                 const serverMsgs = await fetchMessageHistory(selectedChatId);
-                if (serverMsgs && serverMsgs.length > currentMessages.length) {
-                    setCurrentMessages(serverMsgs);
-                }
+                if (serverMsgs && serverMsgs.length > currentMessages.length) setCurrentMessages(serverMsgs);
              }
-        }, 3000); // Chạy mỗi 3 giây
+
+             // 3. Check Role (Logic Mới) - Chỉ check khi đang là User thường
+             if (userRole === 'USER') {
+                 checkRoleAndRedirect();
+             }
+        }, 3000); // 3 giây chạy 1 lần tất cả
+        
         return () => clearInterval(interval);
-    }, [selectedChatId, fetchChatData, fetchMedicalRecords, currentMessages.length]);
+    }, [selectedChatId, fetchChatData, fetchMedicalRecords, currentMessages.length, userRole, checkRoleAndRedirect]);
 
     // --- LOGIC KHỞI TẠO ---
     useEffect(() => {
@@ -184,7 +289,7 @@ const Dashboard: React.FC = () => {
                 setUserId(userData.user_info.id);
                 setFullName(userData.user_info.full_name || '');
                 
-                await fetchMedicalRecords(); // Gọi ngay lần đầu
+                await fetchMedicalRecords(); 
                 await fetchChatData(); 
             } catch (error) { console.error("Lỗi tải dữ liệu:", error); } 
             finally { setIsLoading(false); }
@@ -228,14 +333,12 @@ const Dashboard: React.FC = () => {
         if (newState) setHasViewedNotifications(true);
     };
 
-    // Helper: Màu trạng thái
     const getStatusColor = (status: string) => {
-        if (status.includes("Hoàn thành") || status.includes("Completed")) return "#28a745"; // Xanh
-        if (status.includes("Lỗi") || status.includes("Failed")) return "#dc3545"; // Đỏ
-        return "#e67e22"; // Cam (Đang chờ)
+        if (status.includes("Hoàn thành") || status.includes("Completed")) return "#28a745"; 
+        if (status.includes("Lỗi") || status.includes("Failed")) return "#dc3545"; 
+        return "#e67e22"; 
     };
 
-    // --- RENDER ---
     const totalScans = historyData.length;
     const highRiskCount = historyData.filter(item => item.result.includes('Nặng') || item.result.includes('Trung Bình') || item.result.includes('Severe') || item.result.includes('Moderate') || item.result.includes('PDR')).length;
     const recentNotifications = historyData.slice(0, 5);
@@ -243,85 +346,152 @@ const Dashboard: React.FC = () => {
     const showRedDot = serverHasUnread && !hasViewedNotifications;
     const unreadMessagesCount = chatData.filter(chat => chat.unread).length; 
 
+    // --- RENDER CONTENT ---
     const renderContent = () => {
+        // --- 1. RENDER FORM ĐĂNG KÝ ---
+        if (activeTab === 'clinic-register') {
+            return (
+                <div style={styles.cardInfo}>
+                    <h2 style={{ marginBottom: '20px', borderBottom: '1px solid #eee', paddingBottom: '10px' }}>🏥 Đăng ký Phòng khám</h2>
+                    <p style={{ color: '#666', marginBottom: '20px' }}>Vui lòng điền thông tin và tải lên giấy tờ chứng thực (Giấy phép kinh doanh / CCHN).</p>
+                    
+                    <form onSubmit={handleClinicSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '20px', maxWidth: '800px' }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
+                            <div>
+                                <label style={styles.formLabel}>Tên phòng khám <span style={{color:'red'}}>*</span></label>
+                                <input required type="text" style={styles.formInput} placeholder="Nhập tên phòng khám..." value={clinicForm.name} onChange={(e) => setClinicForm({...clinicForm, name: e.target.value})} />
+                            </div>
+                             <div>
+                                <label style={styles.formLabel}>Mã số giấy phép <span style={{color:'red'}}>*</span></label>
+                                <input required type="text" style={styles.formInput} placeholder="GPKD/CCHN..." value={clinicForm.license} onChange={(e) => setClinicForm({...clinicForm, license: e.target.value})} />
+                            </div>
+                        </div>
+
+                        <div>
+                            <label style={styles.formLabel}>Địa chỉ <span style={{color:'red'}}>*</span></label>
+                            <input required type="text" style={styles.formInput} placeholder="Số nhà, đường, phường/xã..." value={clinicForm.address} onChange={(e) => setClinicForm({...clinicForm, address: e.target.value})} />
+                        </div>
+                        
+                        <div>
+                            <label style={styles.formLabel}>Số điện thoại <span style={{color:'red'}}>*</span></label>
+                            <input required type="text" style={styles.formInput} placeholder="0912..." value={clinicForm.phone} onChange={(e) => setClinicForm({...clinicForm, phone: e.target.value})} />
+                        </div>
+
+                        {/* --- PHẦN UPLOAD ẢNH --- */}
+                        <div style={{marginTop: '10px'}}>
+                            <label style={styles.formLabel}>Ảnh chứng thực giấy tờ <span style={{color:'red'}}>*</span></label>
+                            <div style={styles.uploadGrid}>
+                                {/* Mặt trước (Chỉ ảnh) */}
+                                <div style={styles.uploadBox}>
+                                    {previewImages.front ? (
+                                        <div style={styles.previewContainer}>
+                                            <img src={previewImages.front} alt="Front" style={styles.previewImage} />
+                                            <button type="button" onClick={() => removeImage('front')} style={styles.removeBtn}><FaTrash /></button>
+                                        </div>
+                                    ) : (
+                                        <label style={styles.uploadLabel}>
+                                            <FaImage size={30} color="#007bff" />
+                                            <span style={{marginTop: '10px', fontSize:'14px', color:'#666'}}>Ảnh</span>
+                                            <input type="file" accept="image/*" hidden onChange={(e) => handleFileSelect(e, 'front')} />
+                                        </label>
+                                    )}
+                                </div>
+
+                                {/*(File bất kỳ) */}
+                                <div style={styles.uploadBox}>
+                                    {clinicImages.back ? (
+                                        <div style={styles.previewContainer}>
+                                            {/* Logic hiển thị: Nếu là ảnh thì hiện ảnh, không thì hiện Icon File */}
+                                            {clinicImages.back.type.startsWith('image/') ? (
+                                                <img src={previewImages.back || ''} alt="Back" style={styles.previewImage} />
+                                            ) : (
+                                                <div style={{display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', height:'100%', color:'#555'}}>
+                                                    <FaFileAlt size={40} color="#6c757d" />
+                                                    <span style={{fontSize:'13px', marginTop:'10px', padding:'0 10px', textAlign:'center', wordBreak:'break-all'}}>
+                                                        {clinicImages.back.name}
+                                                    </span>
+                                                </div>
+                                            )}
+                                            
+                                            {/* Nút xóa */}
+                                            <button type="button" onClick={() => removeImage('back')} style={styles.removeBtn}><FaTrash /></button>
+                                        </div>
+                                    ) : (
+                                        <label style={styles.uploadLabel}>
+                                            <FaFileAlt size={30} color="#007bff" />
+                                            <span style={{marginTop: '10px', fontSize:'14px', color:'#666'}}>File</span>
+                                            {/* QUAN TRỌNG: Không có accept, nhận mọi file */}
+                                            <input 
+                                                type="file" 
+                                                accept='.pdf, .doc, .docx, .xls, .xlsx, .csv, image/*'
+                                                hidden
+                                                onChange={(e) => handleFileSelect(e, 'back')} 
+                                            />
+                                        </label>
+                                    )}
+                                </div>
+                            </div>
+                            <p style={{fontSize:'12px', color:'#999', marginTop:'8px'}}>* Định dạng hỗ trợ: JPG, PNG, PDF, DOCX. Dung lượng tối đa 5MB.</p>
+                        </div>
+
+                        <div>
+                            <label style={styles.formLabel}>Giới thiệu ngắn</label>
+                            <textarea rows={3} style={{...styles.formInput, resize: 'vertical'}} placeholder="Mô tả về chuyên khoa, dịch vụ..." value={clinicForm.description} onChange={(e) => setClinicForm({...clinicForm, description: e.target.value})} />
+                        </div>
+
+                        <button type="submit" style={{...styles.bigPrimaryBtn, width: 'fit-content', opacity: isSubmittingClinic ? 0.7 : 1}} disabled={isSubmittingClinic}>
+                            {isSubmittingClinic ? 'Đang gửi hồ sơ...' : 'Gửi hồ sơ đăng ký'}
+                        </button>
+                    </form>
+                </div>
+            );
+        }
+
+        // --- 2. RENDER CHAT ---
         if (activeTab === 'messages') {
             const currentPartner = chatData.find(c => c.id === selectedChatId);
             return (
                 <div style={styles.messengerContainer}>
-                    {/* CỘT TRÁI: DANH SÁCH CHAT */}
                     <div style={styles.chatListPanel}>
-                        <div style={styles.chatHeaderLeft}>
-                            <h2 style={{margin: 0, fontSize: '24px'}}>Chat</h2>
-                        </div>
+                        <div style={styles.chatHeaderLeft}><h2 style={{margin: 0, fontSize: '24px'}}>Chat</h2></div>
                         <div style={styles.chatListScroll}>
                             {chatData.map(msg => (
                                 <div key={msg.id} style={{...styles.chatListItem, backgroundColor: selectedChatId === msg.id ? '#ebf5ff' : 'transparent'}} onClick={() => openChat(msg.id)}>
-                                    <div style={styles.avatarLarge}>
-                                    {(msg.full_name || msg.sender).charAt(0).toUpperCase()}
-                                </div>
-                                <div style={{flex: 1, overflow: 'hidden'}}>
-                                    <div style={{display: 'flex', justifyContent: 'space-between'}}>
-                                    <span style={{fontWeight: msg.unread ? '800' : '500', fontSize: '15px', color: '#050505'}}>
-                                        {msg.full_name || msg.sender}
-                                    </span>
-                                </div>
-                                        <div style={{display: 'flex', alignItems: 'center', gap: '5px'}}>
-                                            <p style={{margin: 0, fontSize: '13px', color: msg.unread ? '#050505' : '#65676b', fontWeight: msg.unread ? 'bold' : 'normal', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'}}>
-                                                {msg.preview}
-                                            </p>
-                                            <span style={{fontSize: '11px', color: '#65676b'}}>• {msg.time}</span>
-                                        </div>
+                                    <div style={styles.avatarLarge}>{(msg.full_name || msg.sender).charAt(0).toUpperCase()}</div>
+                                    <div style={{flex: 1, overflow: 'hidden'}}>
+                                        <div style={{display: 'flex', justifyContent: 'space-between'}}><span style={{fontWeight: msg.unread ? '800' : '500', fontSize: '15px', color: '#050505'}}>{msg.full_name || msg.sender}</span></div>
+                                        <div style={{display: 'flex', alignItems: 'center', gap: '5px'}}><p style={{margin: 0, fontSize: '13px', color: msg.unread ? '#050505' : '#65676b', fontWeight: msg.unread ? 'bold' : 'normal', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'}}>{msg.preview}</p><span style={{fontSize: '11px', color: '#65676b'}}>• {msg.time}</span></div>
                                     </div>
                                     {msg.unread && <div style={styles.unreadBlueDot}></div>}
                                 </div>
                             ))}
                         </div>
                     </div>
-                    {/* CỘT PHẢI: KHUNG CHAT */}
                     <div style={styles.chatWindowPanel}>
                         {selectedChatId ? (
                             <>
                                 <div style={styles.chatWindowHeader}>
-                                    <div style={styles.avatarMedium}>
-                                        {(currentPartner?.full_name || currentPartner?.sender || '').charAt(0).toUpperCase()}
-                                    </div>
-                                    <div style={{flex: 1}}>
-                                        <h4 style={{margin: 0, fontSize: '16px'}}>
-                                            {currentPartner?.full_name || currentPartner?.sender}
-                                        </h4>
-                                        <span style={{fontSize: '12px', color: '#65676b'}}>
-                                            {currentPartner?.id === 'system' ? 'Hệ thống' : 'Bác sĩ'}
-                                        </span>
-                                    </div>
+                                    <div style={styles.avatarMedium}>{(currentPartner?.full_name || currentPartner?.sender || '').charAt(0).toUpperCase()}</div>
+                                    <div style={{flex: 1}}><h4 style={{margin: 0, fontSize: '16px'}}>{currentPartner?.full_name || currentPartner?.sender}</h4><span style={{fontSize: '12px', color: '#65676b'}}>{currentPartner?.id === 'system' ? 'Hệ thống' : 'Bác sĩ'}</span></div>
                                 </div>
                                 <div style={styles.messagesBody}>
                                     {currentMessages.map((msg, idx) => (
                                         <div key={idx} style={{display: 'flex', justifyContent: msg.is_me ? 'flex-end' : 'flex-start', marginBottom: '10px'}}>
                                             {!msg.is_me && <div style={styles.avatarSmall}>{currentPartner?.sender.charAt(0).toUpperCase()}</div>}
-                                            <div style={{maxWidth: '65%', padding: '8px 12px', borderRadius: '18px', backgroundColor: msg.is_me ? '#0084ff' : '#e4e6eb', color: msg.is_me ? 'white' : 'black', fontSize: '14.5px', lineHeight: '1.4', position: 'relative'}} title={msg.time}>
-                                                {msg.content}
-                                            </div>
+                                            <div style={{maxWidth: '65%', padding: '8px 12px', borderRadius: '18px', backgroundColor: msg.is_me ? '#0084ff' : '#e4e6eb', color: msg.is_me ? 'white' : 'black', fontSize: '14.5px', lineHeight: '1.4', position: 'relative'}} title={msg.time}>{msg.content}</div>
                                         </div>
                                     ))}
                                     <div ref={messagesEndRef} />
                                 </div>
                                 {selectedChatId !== 'system' && (
                                     <div style={styles.chatInputArea}>
-                                        <form onSubmit={handleSendMessage} style={{flex: 1, display: 'flex'}}>
-                                            <input type="text" placeholder="Nhắn tin..." value={newMessageText} onChange={(e) => setNewMessageText(e.target.value)} style={styles.messengerInput} />
-                                        </form>
+                                        <form onSubmit={handleSendMessage} style={{flex: 1, display: 'flex'}}><input type="text" placeholder="Nhắn tin..." value={newMessageText} onChange={(e) => setNewMessageText(e.target.value)} style={styles.messengerInput} /></form>
                                         <div onClick={handleSendMessage} style={{cursor: 'pointer'}}><FaPaperPlane size={20} color="#0084ff" /></div>
                                     </div>
                                 )}
                             </>
                         ) : (
-                            <div style={styles.emptyChatState}>
-                                <div style={{width: '80px', height: '80px', borderRadius: '50%', backgroundColor: '#e4e6eb', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '20px'}}>
-                                    <img src="/logo.svg" alt="AURA Logo" style={{width: '50px'}}  />
-                                </div>
-                                <h3>Chào mừng đến với AURA Chat</h3>
-                                <p>Chọn một cuộc trò chuyện để bắt đầu nhắn tin.</p>
-                            </div>
+                            <div style={styles.emptyChatState}><div style={{width: '80px', height: '80px', borderRadius: '50%', backgroundColor: '#e4e6eb', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '20px'}}><img src="/logo.svg" alt="AURA Logo" style={{width: '50px'}}  /></div><h3>Chào mừng đến với AURA Chat</h3><p>Chọn một cuộc trò chuyện để bắt đầu nhắn tin.</p></div>
                         )}
                     </div>
                 </div>
@@ -347,21 +517,8 @@ const Dashboard: React.FC = () => {
                             {historyData.map((item, i) => (
                                 <tr key={i} style={{ borderBottom: '1px solid #f0f0f0' }}>
                                     <td style={{padding:'12px'}}>{item.date} <small style={{color:'#999'}}>{item.time}</small></td>
-                                    
-                                    {/* PHẦN HIỂN THỊ TRẠNG THÁI */}
-                                    <td style={{padding:'12px', fontWeight:'bold', color: getStatusColor(item.status)}}>
-                                        {item.status.includes('Đang') ? 'Đang phân tích...' : item.result}
-                                        {item.status.includes('Đang') && <span style={styles.spinner}> ⏳</span>}
-                                    </td>
-
-                                    <td style={{padding:'12px'}}>
-                                        <button 
-                                            onClick={() => goToDetail(item.id)} 
-                                            style={{...styles.viewDetailBtn, opacity: item.status.includes('Đang') ? 0.6 : 1}}
-                                        >
-                                            Xem
-                                        </button>
-                                    </td>
+                                    <td style={{padding:'12px', fontWeight:'bold', color: getStatusColor(item.status)}}>{item.status.includes('Đang') ? 'Đang phân tích...' : item.result}{item.status.includes('Đang') && <span style={styles.spinner}> ⏳</span>}</td>
+                                    <td style={{padding:'12px'}}><button onClick={() => goToDetail(item.id)} style={{...styles.viewDetailBtn, opacity: item.status.includes('Đang') ? 0.6 : 1}}>Xem</button></td>
                                 </tr>
                             ))}
                         </tbody>
@@ -380,8 +537,14 @@ const Dashboard: React.FC = () => {
                 <nav style={styles.navMenu}>
                     <button style={activeTab === 'home' ? styles.navItemActive : styles.navItem} onClick={() => handleNavClick('home')}>🏠 Trang chủ</button>
                     <button style={activeTab === 'messages' ? styles.navItemActive : styles.navItem} onClick={() => handleNavClick('messages')}>
-                        💬 Tin nhắn {unreadMessagesCount > 0 && <span style={styles.chatBadge}>{unreadMessagesCount}</span>}
+                         Tin nhắn {unreadMessagesCount > 0 && <span style={styles.chatBadge}>{unreadMessagesCount}</span>}
                     </button>
+                    
+                    {/* BUTTON PHÒNG KHÁM */}
+                    <button style={activeTab === 'clinic-register' ? styles.navItemActive : styles.navItem} onClick={() => handleNavClick('clinic-register')}>
+                         Đăng ký Phòng khám
+                    </button>
+
                     <button style={activeTab === 'payments' ? styles.navItemActive : styles.navItem} onClick={() => handleNavClick('payments')}>💳 Thanh toán</button>
                 </nav>
             </aside>
@@ -400,12 +563,9 @@ const Dashboard: React.FC = () => {
                         </div>
                         <div style={{position:'relative'}} ref={profileRef}>
                             <div style={styles.avatar} onClick={()=>setShowUserMenu(!showUserMenu)}>{userName.charAt(0)}</div>
-                            
                             {showUserMenu && (
                                 <div style={styles.dropdownMenu}>
-                                    <div style={styles.dropdownHeader}>
-                                        <strong>{full_name}</strong><br/><small>{userRole}</small>
-                                    </div>
+                                    <div style={styles.dropdownHeader}><strong>{full_name}</strong><br/><small>{userRole}</small></div>
                                     <button style={styles.dropdownItem} onClick={goToProfilePage}>👤 Hồ sơ cá nhân</button>
                                     <div style={{height: '1px', background: '#eee', margin: '5px 0'}}></div>
                                     <button style={{...styles.dropdownItem, color: '#dc3545'}} onClick={handleLogout}>🚪 Đăng xuất</button>
@@ -471,7 +631,15 @@ const styles: { [key: string]: React.CSSProperties } = {
     chatInputArea: { padding: '12px 16px', display: 'flex', alignItems: 'center', gap: '12px', borderTop: '1px solid #e4e6eb' },
     messengerInput: { flex: 1, backgroundColor: '#f0f2f5', border: 'none', borderRadius: '20px', padding: '9px 16px', fontSize: '15px', outline: 'none' },
     emptyChatState: { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#65676b', textAlign: 'center' },
-    spinner: { display: 'inline-block', animation: 'spin 2s linear infinite' }
+    spinner: { display: 'inline-block', animation: 'spin 2s linear infinite' },
+    formLabel: { display: 'block', marginBottom: '8px', fontWeight: '600', color: '#333', fontSize: '14px' },
+    formInput: { width: '100%', padding: '10px 15px', borderRadius: '8px', border: '1px solid #ddd', fontSize: '15px', outline: 'none', transition: 'border 0.2s', boxSizing: 'border-box' },
+    uploadGrid: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px', marginTop: '10px' },
+    uploadBox: { border: '2px dashed #ccd0d5', borderRadius: '12px', height: '180px', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: '#f8f9fa', position: 'relative', overflow: 'hidden' },
+    uploadLabel: { display: 'flex', flexDirection: 'column', alignItems: 'center', cursor: 'pointer', width: '100%', height: '100%', justifyContent: 'center', transition: 'background 0.2s' },
+    previewContainer: { width: '100%', height: '100%', position: 'relative' },
+    previewImage: { width: '100%', height: '100%', objectFit: 'cover' },
+    removeBtn: { position: 'absolute', top: '10px', right: '10px', backgroundColor: 'rgba(255,255,255,0.9)', border: 'none', borderRadius: '50%', width: '30px', height: '30px', cursor: 'pointer', display: 'flex', alignItems:'center',justifyContent:'center',color:'#dc3545',boxShadow:'0 2px 5px rgba(0, 0, 0, 0.2)' },
 };
 
 // Animation xoay
