@@ -10,7 +10,7 @@ import asyncio
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Depends, status, File, UploadFile, BackgroundTasks, Form
 from fastapi.middleware.cors import CORSMiddleware
-from typing import List # List cho kiểu dữ liệu Pydantic
+from typing import List
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 import cloudinary
@@ -31,16 +31,14 @@ import csv
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.utils import ImageReader
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
 from fastapi.responses import StreamingResponse
 
 # --- CẤU HÌNH ---
 load_dotenv()
 app = FastAPI()
-AI_SERVICE_URL = os.getenv("AI_SERVICE_URL", "http://localhost:8001/analyze") # Trỏ tới Service AI
+AI_SERVICE_URL = os.getenv("AI_SERVICE_URL", "http://localhost:8001/analyze") 
 
-# --- CẤU HÌNH GỬI MAIL (Chỉ khai báo 1 lần ở đây) ---
+# --- CẤU HÌNH GỬI MAIL ---
 conf = ConnectionConfig(
     MAIL_USERNAME = os.getenv("MAIL_USERNAME"),
     MAIL_PASSWORD = os.getenv("MAIL_PASSWORD"),
@@ -140,13 +138,15 @@ class ResetPasswordRequest(BaseModel):
     token: str
     new_password: str
 
-class CreateDoctorRequest(BaseModel):
-    userName: str
-    password: str
-    full_name: str
-    email: str = None
-    phone: str = None
-    patient_ids: List[str] = []
+class ClinicStatusUpdate(BaseModel):
+    status: str 
+
+# [MODELS CHO CLINIC]
+class AddExistingDoctorByIdRequest(BaseModel):
+    doctor_id: str
+
+class AddExistingPatientByIdRequest(BaseModel):
+    patient_id: str
 
 # --- HÀM XỬ LÝ TIẾNG VIỆT ---
 def remove_accents(input_str):
@@ -162,17 +162,15 @@ def create_access_token(data: dict):
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 def verify_password(plain_password, hashed_password):
-    # Chuyển cả 2 về bytes để so sánh
     password_byte_enc = plain_password.encode('utf-8')
     hashed_password_byte_enc = hashed_password.encode('utf-8')
     return bcrypt.checkpw(password_byte_enc, hashed_password_byte_enc)
 
 def get_password_hash(password):
-    # Chuyển password sang bytes, tạo salt và hash
     pwd_bytes = password.encode('utf-8')
     salt = bcrypt.gensalt()
     hashed = bcrypt.hashpw(pwd_bytes, salt)
-    return hashed.decode('utf-8') # Trả về chuỗi để lưu vào DB
+    return hashed.decode('utf-8')
 
 async def get_current_user(token: str = Depends(oauth2_scheme)):
     credentials_exception = HTTPException(
@@ -196,47 +194,24 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
     return user_info
 
 # --- AI LOGIC (Background Task) ---
-# HÀM AI WRAPPER MỚI (CHỐNG LAG)
-# --- Cần thêm import này ở đầu file main.py nếu chưa có ---
-import requests
-import os
-
-# Định nghĩa địa chỉ của AI Service (đang chạy ở port 8001)
-AI_SERVICE_URL = os.getenv("AI_SERVICE_URL", "http://localhost:8001/analyze")
-
 async def real_ai_analysis(record_id: str, image_url: str):
-    # Lưu ý: Không cần dùng 'async with ai_lock' nữa vì server này không chạy AI nặng
     print(f"📡 Backend Gateway: Đang gửi yêu cầu sang AI Service cho hồ sơ {record_id}")
-    
     try:
-        # BƯỚC 1: Tải ảnh gốc từ Cloudinary về (để chuẩn bị gửi đi)
         response = requests.get(image_url)
-        if response.status_code != 200: 
-            raise Exception("Lỗi tải ảnh gốc từ Cloudinary")
+        if response.status_code != 200: raise Exception("Lỗi tải ảnh gốc từ Cloudinary")
         image_bytes = response.content
 
-        # BƯỚC 2: GỌI SANG AI MICROSERVICE (Giao tiếp qua HTTP)
-        # Gửi file ảnh dưới dạng multipart/form-data
-        files = {
-            'file': ('image.jpg', image_bytes, 'image/jpeg')
-        }
-        
-        # Gọi POST sang localhost:8001/analyze
+        files = {'file': ('image.jpg', image_bytes, 'image/jpeg')}
         ai_response = requests.post(AI_SERVICE_URL, files=files)
 
-        # Kiểm tra xem AI Service có trả về 200 OK không
         if ai_response.status_code != 200:
             raise Exception(f"AI Service báo lỗi: {ai_response.text}")
 
-        # BƯỚC 3: Nhận kết quả JSON từ AI Service
         result_data = ai_response.json()
-        
-        # Trích xuất dữ liệu (Khớp với model AIResponse bên file ai_service/main.py)
         diagnosis_result = result_data.get("diagnosis_result")
         detailed_risk = result_data.get("detailed_risk")
-        annotated_url = result_data.get("annotated_image_url") # AI Service đã upload xong và trả link về
+        annotated_url = result_data.get("annotated_image_url")
 
-        # BƯỚC 4: Cập nhật Database (Logic giữ nguyên)
         await medical_records_collection.update_one(
             {"_id": ObjectId(record_id)},
             {"$set": {
@@ -246,7 +221,7 @@ async def real_ai_analysis(record_id: str, image_url: str):
                 "annotated_image_url": annotated_url
             }}
         )
-        print(f"✅ Hồ sơ {record_id} hoàn tất (Xử lý bởi Microservice).")
+        print(f"✅ Hồ sơ {record_id} hoàn tất.")
 
     except Exception as e:
         print(f"❌ Lỗi kết nối Microservice ({record_id}): {e}")
@@ -257,19 +232,17 @@ async def real_ai_analysis(record_id: str, image_url: str):
                 "ai_result": "Lỗi hệ thống AI"
             }}
         )
-# --- API ENDPOINTS ---
+
+# --- API ENDPOINTS: AUTH & USERS ---
 
 @app.post("/api/register")
 async def register(data: RegisterRequest):
-    # 1. Check user tồn tại
     existing_user = await users_collection.find_one({"userName": data.userName})
     if existing_user: 
         raise HTTPException(status_code=400, detail="Tên tài khoản đã được sử dụng")
     
-    # 2. Hash password bằng Passlib
     hashed_password = get_password_hash(data.password)
     
-    # 3. Tạo User Model
     new_user_model = User(
         userName=data.userName,
         email=data.userName if "@" in data.userName else f"{data.userName}@example.com",
@@ -278,7 +251,6 @@ async def register(data: RegisterRequest):
         profile=UserProfile(full_name="New User")
     )
     
-    # 4. Lưu DB
     user_dict = new_user_model.model_dump(by_alias=True, exclude={"id"})
     await users_collection.insert_one(user_dict)
     
@@ -287,8 +259,7 @@ async def register(data: RegisterRequest):
 @app.post("/api/login")
 async def login(data: LoginRequest):
     user = await users_collection.find_one({"userName": data.userName})
-    if not user: 
-        raise HTTPException(status_code=400, detail="Tên tài khoản không tồn tại")
+    if not user: raise HTTPException(status_code=400, detail="Tên tài khoản không tồn tại")
     
     if not verify_password(data.password, user["password"]):
          raise HTTPException(status_code=400, detail="Sai mật khẩu")
@@ -305,117 +276,10 @@ async def login(data: LoginRequest):
 async def read_users_me(current_user: dict = Depends(get_current_user)):
     return {"message": "Dữ liệu người dùng", "user_info": current_user}
 
-@app.get("/api/medical-records")
-async def get_medical_records(current_user: dict = Depends(get_current_user)):
-    cursor = medical_records_collection.find({"user_id": current_user["id"]}).sort("upload_date", -1)
-    results = []
-    async for doc in cursor:
-        results.append({
-            "id": str(doc["_id"]),
-            "date": doc["upload_date"].strftime("%d/%m/%Y"), 
-            "time": doc["upload_date"].strftime("%H:%M"),     
-            "result": doc["ai_result"],
-            "status": "Hoàn thành" if doc["ai_analysis_status"] == "COMPLETED" else "Đang xử lý",
-            "image_url": doc["image_url"]
-        })
-    return {"history": results}
-
-
-@app.get("/api/medical-records/{record_id}")
-async def get_single_record(record_id: str, current_user: dict = Depends(get_current_user)):
-    try:
-        query = {"_id": ObjectId(record_id)}
-        if current_user["role"] != "DOCTOR": 
-            query["user_id"] = current_user["id"]
-            
-        record = await medical_records_collection.find_one(query)
-        if not record: raise HTTPException(404, "Không tìm thấy hồ sơ")
-            
-        return {
-            "id": str(record["_id"]),
-            "date": record["upload_date"].strftime("%d/%m/%Y"),
-            "result": record["ai_result"],
-            "status": "Hoàn thành" if record["ai_analysis_status"] == "COMPLETED" else "Đang xử lý",
-            "image_url": record["image_url"],
-            "annotated_image_url": record.get("annotated_image_url"),
-            "doctor_note": record.get("doctor_note", "")
-        }
-    except Exception as e:
-        print(f"Lỗi: {e}")
-        raise HTTPException(status_code=400, detail="ID không hợp lệ hoặc lỗi server")
-
-
-
-@app.put("/api/medical-records/{record_id}/note")
-async def update_doctor_note(record_id: str, data: DoctorNoteRequest, current_user: dict = Depends(get_current_user)):
-    if current_user["role"] != "DOCTOR":
-        raise HTTPException(status_code=403, detail="Chỉ Bác sĩ mới có quyền thêm ghi chú.")
-    try:
-        result = await medical_records_collection.update_one(
-            {"_id": ObjectId(record_id)},
-            {"$set": {"doctor_note": data.doctor_note}}
-        )
-        if result.matched_count == 0:
-            raise HTTPException(status_code=404, detail="Không tìm thấy hồ sơ.")
-        return {"message": "Đã lưu ghi chú bác sĩ."}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail="Lỗi server.")
-
-@app.post("/api/admin/assign-doctor")
-async def assign_doctor(data: AssignDoctorRequest, current_user: dict = Depends(get_current_user)):
-    if current_user["role"] != "ADMIN" and current_user["role"] != "DOCTOR":
-        raise HTTPException(status_code=403, detail="Quyền bị từ chối.")
-    try:
-        doctor = await users_collection.find_one({"_id": ObjectId(data.doctor_id), "role": "DOCTOR"})
-        if not doctor: raise HTTPException(status_code=404, detail="ID bác sĩ không tồn tại.")
-        
-        result = await users_collection.update_one(
-            {"_id": ObjectId(data.patient_id)},
-            {"$set": {"assigned_doctor_id": data.doctor_id}}
-        )
-        if result.modified_count == 0: raise HTTPException(status_code=404, detail="Không tìm thấy bệnh nhân.")
-        return {"message": "Phân công bác sĩ thành công.", "doctor_name": doctor["userName"]}
-    except HTTPException as http_err: raise http_err
-    except Exception as e: raise HTTPException(status_code=400, detail="Lỗi server.")
-
-# --- THÊM ĐOẠN NÀY VÀO main.py ---
-
-@app.get("/api/medical-records/patient/{patient_id}")
-async def get_patient_history(patient_id: str, current_user: dict = Depends(get_current_user)):
-    # 1. Kiểm tra quyền (Chỉ Bác sĩ hoặc Admin mới được xem lịch sử người khác)
-    if current_user["role"] not in ["DOCTOR", "ADMIN"]:
-        raise HTTPException(status_code=403, detail="Bạn không có quyền xem hồ sơ này.")
-
-    # 2. Tìm tên bệnh nhân (Optional - để hiển thị đẹp hơn nếu cần)
-    patient = await users_collection.find_one({"_id": ObjectId(patient_id)})
-    patient_name = patient.get("full_name") or patient.get("userName") if patient else "Bệnh nhân"
-
-    # 3. Truy vấn Database lấy danh sách hồ sơ
-    # Lưu ý: user_id trong bảng medical_records lưu dưới dạng String
-    cursor = medical_records_collection.find({"user_id": patient_id}).sort("upload_date", -1)
-    
-    records = []
-    async for doc in cursor:
-        records.append({
-            "id": str(doc["_id"]),
-            "date": doc["upload_date"].strftime("%d/%m/%Y"), 
-            "time": doc["upload_date"].strftime("%H:%M"),     
-            "result": doc.get("ai_result", "Chưa có kết quả"),
-            "doctor_note": doc.get("doctor_note", ""),
-            "status": "Hoàn thành" if doc.get("ai_analysis_status") == "COMPLETED" else "Đang xử lý",
-            "image_url": doc.get("image_url", "")
-        })
-    
-    return {
-        "patient_name": patient_name,
-        "records": records
-    }
-
 @app.post("/api/google-login")
 async def google_login(data: GoogleLoginRequest):
     google_response = requests.get(f"https://www.googleapis.com/oauth2/v3/userinfo?access_token={data.token}")
-    if google_response.status_code != 200:
-        raise HTTPException(status_code=400, detail="Token Google không hợp lệ")
+    if google_response.status_code != 200: raise HTTPException(status_code=400, detail="Token Google không hợp lệ")
     google_user = google_response.json()
     email = google_user.get('email')
     name = google_user.get('name', 'Google User')
@@ -443,11 +307,9 @@ async def facebook_login(data: FacebookLoginRequest):
     try:
         fb_response = requests.get(fb_url)
         fb_data = fb_response.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Không thể kết nối tới Facebook")
+    except Exception: raise HTTPException(status_code=400, detail="Không thể kết nối tới Facebook")
 
-    if "error" in fb_data:
-        raise HTTPException(status_code=400, detail="Token Facebook không hợp lệ")
+    if "error" in fb_data: raise HTTPException(status_code=400, detail="Token Facebook không hợp lệ")
 
     email = fb_data.get("email")
     name = fb_data.get("name", "Facebook User")
@@ -481,37 +343,24 @@ async def facebook_login(data: FacebookLoginRequest):
 async def set_username(data: UpdateUsernameRequest, current_user: dict = Depends(get_current_user)):
     user_id = current_user["id"]
     new_username = data.new_username.strip()
+    if len(new_username) < 3: raise HTTPException(status_code=400, detail="Tên quá ngắn")
     
-    if len(new_username) < 3: 
-        raise HTTPException(status_code=400, detail="Tên quá ngắn")
-    
-    existing_user = await users_collection.find_one({
-        "userName": new_username, 
-        "_id": {"$ne": ObjectId(user_id)}
-    })
-    if existing_user: 
-        raise HTTPException(status_code=400, detail="Tên đã tồn tại")
+    existing_user = await users_collection.find_one({"userName": new_username, "_id": {"$ne": ObjectId(user_id)}})
+    if existing_user: raise HTTPException(status_code=400, detail="Tên đã tồn tại")
 
     update_data = {"userName": new_username}
     if data.new_password:
-        if len(data.new_password) < 6:
-            raise HTTPException(status_code=400, detail="Mật khẩu phải từ 6 ký tự trở lên")
+        if len(data.new_password) < 6: raise HTTPException(status_code=400, detail="Mật khẩu phải từ 6 ký tự trở lên")
         update_data["password"] = get_password_hash(data.new_password)
 
     await users_collection.update_one({"_id": ObjectId(user_id)}, {"$set": update_data})
-    
     new_token_data = {"sub": new_username, "role": current_user["role"]}
-    return {
-        "message": "Cập nhật thành công", 
-        "new_access_token": create_access_token(new_token_data), 
-        "new_username": new_username
-    }
+    return {"message": "Cập nhật thành công", "new_access_token": create_access_token(new_token_data), "new_username": new_username}
 
 @app.put("/api/users/profile")
 async def update_user_profile(data: UserProfileUpdate, current_user: dict = Depends(get_current_user)):
     try:
         user_id = current_user["id"]
-        # Validate unique email/phone if needed
         if data.email:
             exist = await users_collection.find_one({"email": data.email, "_id": {"$ne": ObjectId(user_id)}})
             if exist: raise HTTPException(status_code=400, detail="Email đã dùng")
@@ -521,319 +370,86 @@ async def update_user_profile(data: UserProfileUpdate, current_user: dict = Depe
         return {"message": "Cập nhật hồ sơ thành công", "data": update_data}
     except Exception as e: raise HTTPException(status_code=500, detail="Lỗi server")
 
-@app.get("/api/doctor/my-patients")
-async def get_doctor_assigned_patients(current_user: dict = Depends(get_current_user)):
-    if current_user["role"] != "DOCTOR": raise HTTPException(status_code=403, detail="Quyền bị từ chối.")
-    doctor_id = current_user["id"]
-    patient_cursor = users_collection.find({"assigned_doctor_id": doctor_id}).sort("userName", 1)
-    patients_list = []
-    async for patient in patient_cursor:
-        patient_id = str(patient["_id"])
-        latest_record = await medical_records_collection.find_one({"user_id": patient_id}, sort=[("upload_date", -1)])
-        patients_list.append({
-            "id": patient_id, "userName": patient["userName"], "email": patient.get("email", "N/A"), "phone": patient.get("phone", "N/A"), "status": patient.get("status", "ACTIVE"),
-            "latest_scan": {"record_id": str(latest_record["_id"]) if latest_record else None, "date": latest_record["upload_date"].strftime("%d/%m/%Y") if latest_record else "Chưa có", "result": latest_record["ai_result"] if latest_record else "Chưa có dữ liệu", "ai_status": latest_record["ai_analysis_status"] if latest_record else "NA"}
+# --- API ENDPOINTS: MEDICAL RECORDS ---
+
+@app.get("/api/medical-records")
+async def get_medical_records(current_user: dict = Depends(get_current_user)):
+    cursor = medical_records_collection.find({"user_id": current_user["id"]}).sort("upload_date", -1)
+    results = []
+    async for doc in cursor:
+        results.append({
+            "id": str(doc["_id"]),
+            "date": doc["upload_date"].strftime("%d/%m/%Y"), 
+            "time": doc["upload_date"].strftime("%H:%M"),     
+            "result": doc["ai_result"],
+            "status": "Hoàn thành" if doc["ai_analysis_status"] == "COMPLETED" else "Đang xử lý",
+            "image_url": doc["image_url"]
         })
-    return {"patients": patients_list}
+    return {"history": results}
 
-@app.get("/api/admin/users")
-async def get_all_users(current_user: dict = Depends(get_current_user)):
-    if current_user["role"] != "ADMIN": raise HTTPException(status_code=403, detail="Quyền bị từ chối.")
-    user_cursor = users_collection.find() 
-    users_list = []
-    async for user in user_cursor:
-        users_list.append({"id": str(user["_id"]), "userName": user["userName"], "email": user.get("email", ""), "role": user.get("role", "USER"), "status": user.get("status", "ACTIVE"), "assigned_doctor_id": user.get("assigned_doctor_id", None)})
-    return {"users": users_list}
-
-# --- CHAT APIs ---
-@app.post("/api/chat/send")
-async def send_message(data: SendMessageRequest, current_user: dict = Depends(get_current_user)):
-    if data.receiver_id == "system":
-         return {"message": "Đã gửi tới hệ thống (Auto reply)"}
+@app.get("/api/medical-records/{record_id}")
+async def get_single_record(record_id: str, current_user: dict = Depends(get_current_user)):
     try:
-        receiver_oid = ObjectId(data.receiver_id)
-        receiver = await users_collection.find_one({"_id": receiver_oid})
-        if not receiver: raise HTTPException(status_code=404, detail="Người nhận không tồn tại")
-
-        new_message = {
-            "sender_id": current_user["id"],
-            "sender_name": current_user["userName"], 
-            "receiver_id": data.receiver_id,
-            "content": data.content,
-            "timestamp": datetime.utcnow(),
-            "is_read": False
-        }
-        await messages_collection.insert_one(new_message)
-        return {"message": "Đã gửi tin nhắn"}
-    except Exception as e: raise HTTPException(status_code=500, detail="Lỗi server nội bộ")
-
-@app.get("/api/chat/history/{other_user_id}")
-async def get_chat_history(other_user_id: str, current_user: dict = Depends(get_current_user)):
-    user_id = current_user["id"]
-    if other_user_id == "system":
-        return {"messages": [{"id": "sys_welcome", "content": "Chào mừng bạn đến với AURA! Hãy chụp ảnh đáy mắt để bắt đầu.", "is_me": False, "time": datetime.now().strftime("%H:%M %d/%m")}]}
-
-    cursor = messages_collection.find({
-        "$or": [{"sender_id": user_id, "receiver_id": other_user_id}, {"sender_id": other_user_id, "receiver_id": user_id}]
-    }).sort("timestamp", 1)
-    
-    messages = []
-    async for msg in cursor:
-        messages.append({
-            "id": str(msg["_id"]), "sender_id": msg["sender_id"], "content": msg["content"],
-            "time": (msg["timestamp"] + timedelta(hours=7)).strftime("%H:%M %d/%m"),
-            "is_me": msg["sender_id"] == user_id
-        })
-    await messages_collection.update_many({"sender_id": other_user_id, "receiver_id": user_id, "is_read": False}, {"$set": {"is_read": True}})
-    return {"messages": messages}
-
-@app.get("/api/chats")
-async def get_chats(current_user: dict = Depends(get_current_user)):
-    user_id = current_user["id"]
-    role = current_user["role"]
-    chats = []
-
-    async def get_chat_info(partner_id, partner_name):
-        unread = await messages_collection.count_documents({"sender_id": partner_id, "receiver_id": user_id, "is_read": False})
-        last_msg = await messages_collection.find_one({"$or": [{"sender_id": user_id, "receiver_id": partner_id}, {"sender_id": partner_id, "receiver_id": user_id}]}, sort=[("timestamp", -1)])
-        preview = last_msg["content"] if last_msg else "Bắt đầu cuộc trò chuyện..."
-        time_str = (last_msg["timestamp"] + timedelta(hours=7)).strftime("%H:%M") if last_msg else ""
-        return {"id": partner_id, "sender": partner_name, "preview": preview, "time": time_str, "unread": unread > 0, "unread_count": unread}
-
-    if role == "USER":
-        assigned_doc_id = current_user.get("assigned_doctor_id")
-        if assigned_doc_id:
-            try:
-                doctor = await users_collection.find_one({"_id": ObjectId(assigned_doc_id)})
-                if doctor:
-                    name = f"BS. {doctor.get('full_name') or doctor['userName']}"
-                    chats.append(await get_chat_info(str(doctor["_id"]), name))
-            except Exception: pass
-    elif role == "DOCTOR":
-        async for p in users_collection.find({"assigned_doctor_id": user_id}):
-            name = p.get("full_name") or p.get("userName")
-            chats.append(await get_chat_info(str(p["_id"]), name))
-
-    chats.append({"id": "system", "sender": "Hệ thống AURA", "preview": "Thông báo hệ thống", "time": "", "unread": False, "interlocutor_id": "system"})
-    return {"chats": chats}
-
-# --- FORGOT PASSWORD APIs (Đã thêm hàm gửi mail) ---
-
-@app.post("/api/forgot-password")
-async def forgot_password(request: ForgotPasswordRequest, bt: BackgroundTasks):
-    # 1. Tìm user
-    user = await users_collection.find_one({"email": request.email})
-    if not user:
-        raise HTTPException(status_code=404, detail="Email không tồn tại trong hệ thống")
-
-    # 2. Tạo Token
-    reset_token = str(uuid.uuid4())
-    expiration_time = datetime.utcnow() + timedelta(minutes=15)
-
-    # 3. Lưu vào DB
-    await users_collection.update_one(
-        {"_id": user["_id"]},
-        {"$set": {"reset_token": reset_token, "reset_token_exp": expiration_time}}
-    )
-
-    # 4. Gửi Email
-    reset_link = f"http://localhost:5173/reset-password?token={reset_token}"
-    
-    html_content = f"""
-    <div style="font-family: Arial, sans-serif; padding: 20px; color: #333;">
-        <h2 style="color: #4CAF50;">Yêu cầu đặt lại mật khẩu AURA</h2>
-        <p>Xin chào <strong>{user.get('userName', 'Bạn')}</strong>,</p>
-        <p>Chúng tôi vừa nhận được yêu cầu đặt lại mật khẩu cho tài khoản của bạn.</p>
-        <p>Vui lòng nhấp vào nút bên dưới để tạo mật khẩu mới (Link hết hạn sau 15 phút):</p>
-        <a href="{reset_link}" style="background-color: #4CAF50; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block;">Đặt lại mật khẩu ngay</a>
-        <p style="margin-top: 20px;">Hoặc copy đường dẫn này: <br>{reset_link}</p>
-        <p><i>Nếu bạn không yêu cầu, vui lòng bỏ qua email này.</i></p>
-    </div>
-    """
-
-    message = MessageSchema(
-        subject="[AURA] Đặt lại mật khẩu của bạn",
-        recipients=[request.email],
-        body=html_content,
-        subtype=MessageType.html
-    )
-
-    fm = FastMail(conf)
-    bt.add_task(fm.send_message, message)
-
-    return {"message": "Email hướng dẫn đã được gửi. Vui lòng kiểm tra hộp thư."}
-
-@app.post("/api/reset-password")
-async def reset_password(request: ResetPasswordRequest):
-    # 1. Tìm user bằng token
-    user = await users_collection.find_one({"reset_token": request.token})
-    if not user:
-        raise HTTPException(status_code=400, detail="Token không hợp lệ hoặc đã sử dụng.")
-
-    # 2. Check hạn
-    token_exp = user.get("reset_token_exp")
-    if token_exp and token_exp < datetime.utcnow():
-        raise HTTPException(status_code=400, detail="Token đã hết hạn.")
-
-    # 3. Hash pass mới
-    hashed_password = get_password_hash(request.new_password)
-
-    # 4. Update DB & Xóa token
-    await users_collection.update_one(
-        {"_id": user["_id"]},
-        {
-            "$set": {"password": hashed_password}, 
-            "$unset": {"reset_token": "", "reset_token_exp": ""}
-        }
-    )
-
-    return {"message": "Mật khẩu đã được đặt lại thành công!"}
-
-# --- EXPORT API ---
-@app.get("/api/medical-records/{record_id}/export")
-async def export_record(
-    record_id: str, 
-    format: str = "pdf", 
-    current_user: dict = Depends(get_current_user)
-):
-    # 1. Get Record Data
-    try:
-        record = await medical_records_collection.find_one({"_id": ObjectId(record_id)})
-        if not record:
-            raise HTTPException(404, "Medical record not found")
-        
-        # Check permission
-        if current_user["role"] != "DOCTOR" and str(record["user_id"]) != current_user["id"]:
-             raise HTTPException(403, "Permission denied")
-             
-        # Get Patient Info
-        patient = await users_collection.find_one({"_id": ObjectId(record["user_id"])})
-        
-        # Lấy tên gốc và chuyển thành không dấu
-        raw_name = patient.get("full_name", record.get("userName", "N/A"))
-        patient_name = remove_accents(raw_name) # <--- SỬA DÒNG NÀY
-        
-    except Exception:
-        raise HTTPException(400, "Error retrieving data")
-
-    # 2. PROCESS CSV EXPORT
-    if format == "csv":
-        output = io.StringIO()
-        writer = csv.writer(output)
-        
-        # English Headers
-        writer.writerow(["Record ID", "Patient Name", "Scan Date", "Result", "Doctor Note", "Image Link"])
-        # Data Row
-        writer.writerow([
-            str(record["_id"]),
-            patient_name,
-            record["upload_date"].strftime("%Y-%m-%d %H:%M:%S"),
-            record["ai_result"],
-            record.get("doctor_note", "").replace("\n", " "),
-            record.get("annotated_image_url", record["image_url"])
-        ])
-        
-        output.seek(0)
-        return StreamingResponse(
-            io.BytesIO(output.getvalue().encode('utf-8-sig')),
-            media_type="text/csv",
-            headers={"Content-Disposition": f"attachment; filename=AURA_Report_{record_id}.csv"}
-        )
-
-    # 3. PROCESS PDF EXPORT
-    elif format == "pdf":
-        buffer = io.BytesIO()
-        p = canvas.Canvas(buffer, pagesize=A4)
-        width, height = A4
-        
-        # Use Standard Fonts (No need for external .ttf files for English)
-        # Note: If patient names have accents (e.g., José, Nguyễn), standard Helvetica might glitch.
-        # Ideally still use a Unicode font like Arial if names are non-English.
-        font_bold = "Helvetica-Bold"
-        font_regular = "Helvetica"
-        
-        # Header
-        p.setFont(font_bold, 20)
-        p.drawString(50, height - 50, "AURA - RETINAL ANALYSIS REPORT")
-        
-        p.setFont(font_regular, 10)
-        p.drawString(50, height - 70, f"Report ID: {record_id}")
-        p.drawString(50, height - 85, f"Date: {record['upload_date'].strftime('%Y-%m-%d %H:%M')}")
-        
-        p.line(50, height - 95, width - 50, height - 95)
-        
-        # Patient Info
-        p.setFont(font_bold, 12)
-        p.drawString(50, height - 120, "PATIENT INFORMATION:")
-        p.setFont(font_regular, 12)
-        p.drawString(50, height - 140, f"Name: {patient_name}")
-        p.drawString(50, height - 160, f"User ID: {record['user_id']}")
-        
-        # Diagnosis Result
-        p.setFont(font_bold, 12)
-        p.drawString(50, height - 200, "DIAGNOSIS RESULT:")
-        
-        # Color logic based on severity
-        result_text = record["ai_result"]
-        if "Severe" in result_text or "Proliferative" in result_text:
-            p.setFillColorRGB(0.8, 0, 0) # Red
-        elif "Moderate" in result_text or "Suspected" in result_text:
-            p.setFillColorRGB(1, 0.5, 0) # Orange
-        else:
-            p.setFillColorRGB(0, 0.5, 0) # Green
+        query = {"_id": ObjectId(record_id)}
+        if current_user["role"] != "DOCTOR": 
+            query["user_id"] = current_user["id"]
             
-        p.setFont(font_bold, 14)
-        p.drawString(50, height - 225, result_text)
-        p.setFillColorRGB(0, 0, 0) # Reset to black
-        
-        # Doctor Note / Details
-        p.setFont(font_bold, 12)
-        p.drawString(50, height - 260, "DETAILED ANALYSIS / DOCTOR NOTE:")
-        
-        p.setFont(font_regular, 10)
-        text = p.beginText(50, height - 280)
-        note_content = record.get("doctor_note", "No details available.")
-        
-        # Simple text wrapping
-        import textwrap
-        lines = textwrap.wrap(note_content, width=90)
-        for line in lines[:15]: 
-            text.textLine(line)
-        p.drawText(text)
-        
-        # Insert Image
-        img_url = record.get("annotated_image_url", record["image_url"])
-        if img_url:
-            try:
-                img_data = requests.get(img_url, timeout=5).content
-                img = ImageReader(io.BytesIO(img_data))
-                # Draw image at the bottom half
-                p.drawImage(img, 100, 100, width=400, height=400, preserveAspectRatio=True, mask='auto')
-            except Exception as e:
-                p.drawString(50, 200, f"[Cannot load image: {e}]")
+        record = await medical_records_collection.find_one(query)
+        if not record: raise HTTPException(404, "Không tìm thấy hồ sơ")
+            
+        return {
+            "id": str(record["_id"]),
+            "date": record["upload_date"].strftime("%d/%m/%Y"),
+            "result": record["ai_result"],
+            "status": "Hoàn thành" if record["ai_analysis_status"] == "COMPLETED" else "Đang xử lý",
+            "image_url": record["image_url"],
+            "annotated_image_url": record.get("annotated_image_url"),
+            "doctor_note": record.get("doctor_note", "")
+        }
+    except Exception as e:
+        print(f"Lỗi: {e}")
+        raise HTTPException(status_code=400, detail="ID không hợp lệ hoặc lỗi server")
 
-        # Footer
-        p.setFont("Helvetica-Oblique", 8)
-        p.drawString(50, 30, "This report is generated by AURA AI System. Please consult a doctor for final conclusion.")
-        
-        p.showPage()
-        p.save()
-        
-        buffer.seek(0)
-        return StreamingResponse(
-            buffer, 
-            media_type="application/pdf", 
-            headers={"Content-Disposition": f"attachment; filename=AURA_Report_{record_id}.pdf"}
+@app.put("/api/medical-records/{record_id}/note")
+async def update_doctor_note(record_id: str, data: DoctorNoteRequest, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] != "DOCTOR":
+        raise HTTPException(status_code=43, detail="Chỉ Bác sĩ mới có quyền thêm ghi chú.")
+    try:
+        result = await medical_records_collection.update_one(
+            {"_id": ObjectId(record_id)},
+            {"$set": {"doctor_note": data.doctor_note}}
         )
-    
-    else:
-        raise HTTPException(400, "Unsupported format")
+        if result.matched_count == 0: raise HTTPException(status_code=404, detail="Không tìm thấy hồ sơ.")
+        return {"message": "Đã lưu ghi chú bác sĩ."}
+    except Exception as e: raise HTTPException(status_code=500, detail="Lỗi server.")
 
-# API UPLOAD NHIỀU ẢNH
+@app.get("/api/medical-records/patient/{patient_id}")
+async def get_patient_history(patient_id: str, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] not in ["DOCTOR", "ADMIN"]:
+        raise HTTPException(status_code=403, detail="Bạn không có quyền xem hồ sơ này.")
+
+    patient = await users_collection.find_one({"_id": ObjectId(patient_id)})
+    patient_name = patient.get("full_name") or patient.get("userName") if patient else "Bệnh nhân"
+
+    cursor = medical_records_collection.find({"user_id": patient_id}).sort("upload_date", -1)
+    records = []
+    async for doc in cursor:
+        records.append({
+            "id": str(doc["_id"]),
+            "date": doc["upload_date"].strftime("%d/%m/%Y"), 
+            "time": doc["upload_date"].strftime("%H:%M"),     
+            "result": doc.get("ai_result", "Chưa có kết quả"),
+            "doctor_note": doc.get("doctor_note", ""),
+            "status": "Hoàn thành" if doc.get("ai_analysis_status") == "COMPLETED" else "Đang xử lý",
+            "image_url": doc.get("image_url", "")
+        })
+    
+    return {"patient_name": patient_name, "records": records}
+
 @app.post("/api/upload-eye-image")
 async def upload_eye_images(
     bg_tasks: BackgroundTasks, 
-    files: List[UploadFile] = File(...),  # <--- Hỗ trợ list
+    files: List[UploadFile] = File(...), 
     current_user: dict = Depends(get_current_user)
 ):
     if not files: raise HTTPException(400, "Chưa chọn file")
@@ -851,25 +467,116 @@ async def upload_eye_images(
                 "ai_analysis_status": "PENDING", "ai_result": "Đang chờ phân tích..." 
             }
             new_rec = await medical_records_collection.insert_one(record)
-            
-            # Đẩy task vào hàng đợi
             bg_tasks.add_task(real_ai_analysis, str(new_rec.inserted_id), img_url)
-            
             results.append({"url": img_url, "record_id": str(new_rec.inserted_id)})
         except Exception as e: print(f"Lỗi upload: {e}")
             
     return {"message": f"Đã nhận {len(results)} ảnh", "data": results}
 
-# --- IMPORTS CẦN THIẾT (Nếu chưa có ở đầu file thì bổ sung) ---
-# from fastapi import Form, File, UploadFile
-# from bson.objectid import ObjectId
-# from datetime import datetime
+@app.get("/api/medical-records/{record_id}/export")
+async def export_record(
+    record_id: str, 
+    format: str = "pdf", 
+    current_user: dict = Depends(get_current_user)
+):
+    try:
+        record = await medical_records_collection.find_one({"_id": ObjectId(record_id)})
+        if not record: raise HTTPException(404, "Medical record not found")
+        
+        if current_user["role"] != "DOCTOR" and str(record["user_id"]) != current_user["id"]:
+             raise HTTPException(403, "Permission denied")
+             
+        patient = await users_collection.find_one({"_id": ObjectId(record["user_id"])})
+        raw_name = patient.get("full_name", record.get("userName", "N/A"))
+        patient_name = remove_accents(raw_name) 
+        
+    except Exception: raise HTTPException(400, "Error retrieving data")
+
+    if format == "csv":
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(["Record ID", "Patient Name", "Scan Date", "Result", "Doctor Note", "Image Link"])
+        writer.writerow([
+            str(record["_id"]), patient_name, record["upload_date"].strftime("%Y-%m-%d %H:%M:%S"),
+            record["ai_result"], record.get("doctor_note", "").replace("\n", " "),
+            record.get("annotated_image_url", record["image_url"])
+        ])
+        output.seek(0)
+        return StreamingResponse(
+            io.BytesIO(output.getvalue().encode('utf-8-sig')),
+            media_type="text/csv",
+            headers={"Content-Disposition": f"attachment; filename=AURA_Report_{record_id}.csv"}
+        )
+
+    elif format == "pdf":
+        buffer = io.BytesIO()
+        p = canvas.Canvas(buffer, pagesize=A4)
+        width, height = A4
+        font_bold = "Helvetica-Bold"
+        font_regular = "Helvetica"
+        
+        p.setFont(font_bold, 20)
+        p.drawString(50, height - 50, "AURA - RETINAL ANALYSIS REPORT")
+        
+        p.setFont(font_regular, 10)
+        p.drawString(50, height - 70, f"Report ID: {record_id}")
+        p.drawString(50, height - 85, f"Date: {record['upload_date'].strftime('%Y-%m-%d %H:%M')}")
+        p.line(50, height - 95, width - 50, height - 95)
+        
+        p.setFont(font_bold, 12)
+        p.drawString(50, height - 120, "PATIENT INFORMATION:")
+        p.setFont(font_regular, 12)
+        p.drawString(50, height - 140, f"Name: {patient_name}")
+        p.drawString(50, height - 160, f"User ID: {record['user_id']}")
+        
+        p.setFont(font_bold, 12)
+        p.drawString(50, height - 200, "DIAGNOSIS RESULT:")
+        
+        result_text = record["ai_result"]
+        if "Severe" in result_text or "Proliferative" in result_text: p.setFillColorRGB(0.8, 0, 0)
+        elif "Moderate" in result_text or "Suspected" in result_text: p.setFillColorRGB(1, 0.5, 0)
+        else: p.setFillColorRGB(0, 0.5, 0)
+            
+        p.setFont(font_bold, 14)
+        p.drawString(50, height - 225, result_text)
+        p.setFillColorRGB(0, 0, 0)
+        
+        p.setFont(font_bold, 12)
+        p.drawString(50, height - 260, "DETAILED ANALYSIS / DOCTOR NOTE:")
+        
+        p.setFont(font_regular, 10)
+        text = p.beginText(50, height - 280)
+        note_content = record.get("doctor_note", "No details available.")
+        
+        import textwrap
+        lines = textwrap.wrap(note_content, width=90)
+        for line in lines[:15]: text.textLine(line)
+        p.drawText(text)
+        
+        img_url = record.get("annotated_image_url", record["image_url"])
+        if img_url:
+            try:
+                img_data = requests.get(img_url, timeout=5).content
+                img = ImageReader(io.BytesIO(img_data))
+                p.drawImage(img, 100, 100, width=400, height=400, preserveAspectRatio=True, mask='auto')
+            except Exception as e: p.drawString(50, 200, f"[Cannot load image: {e}]")
+
+        p.setFont("Helvetica-Oblique", 8)
+        p.drawString(50, 30, "This report is generated by AURA AI System. Please consult a doctor for final conclusion.")
+        
+        p.showPage()
+        p.save()
+        
+        buffer.seek(0)
+        return StreamingResponse(
+            buffer, media_type="application/pdf", headers={"Content-Disposition": f"attachment; filename=AURA_Report_{record_id}.pdf"}
+        )
+    else: raise HTTPException(400, "Unsupported format")
 
 # ==========================================
 # CÁC API DÀNH CHO QUẢN LÝ PHÒNG KHÁM
 # ==========================================
 
-# --- 1. API ĐĂNG KÝ PHÒNG KHÁM (USER) ---
 @app.post("/api/clinics/register")
 async def register_clinic(
     clinicName: str = Form(...),
@@ -883,8 +590,6 @@ async def register_clinic(
 ):
     try:
         front_url, back_url = None, None
-        
-        # Upload ảnh lên Cloudinary
         if license_image_front:
             res = cloudinary.uploader.upload(license_image_front.file, folder="aura_clinics_license")
             front_url = res.get("secure_url")
@@ -893,9 +598,9 @@ async def register_clinic(
             back_url = res.get("secure_url")
 
         new_clinic = {
-            "owner_id": str(current_user["id"]),      # ID Bác sĩ
+            "owner_id": str(current_user["id"]),      
             "owner_name": current_user["userName"],   
-            "name": clinicName,                       # Tên phòng khám
+            "name": clinicName,                       
             "address": address,
             "phone": phone,
             "license_number": license,
@@ -904,167 +609,389 @@ async def register_clinic(
             "status": "PENDING",
             "created_at": datetime.utcnow()
         }
-        
-        # MongoDB tự sinh _id cho phòng khám
         res = await clinics_collection.insert_one(new_clinic)
         return {"message": "Đăng ký thành công", "clinic_id": str(res.inserted_id)}
-    except Exception as e:
-        print(f"Lỗi: {e}")
-        raise HTTPException(500, "Lỗi Server")
+    except Exception as e: raise HTTPException(500, "Lỗi Server")
 
-# --- 2. API LẤY DANH SÁCH CHỜ DUYỆT (ADMIN) ---
-@app.get("/api/admin/clinics/pending")
-async def get_pending_clinics(current_user: dict = Depends(get_current_user)):
-    if current_user["role"] != "ADMIN": raise HTTPException(403, "Cấm truy cập")
-    
-    cursor = clinics_collection.find({"status": "PENDING"}).sort("created_at", -1)
-    clinics = []
-    async for doc in cursor:
-        clinics.append({
-            "id": str(doc["_id"]),  # ID phòng khám để Admin bấm duyệt
-            "name": doc.get("name"),
-            "owner_name": doc.get("owner_name"),
-            "owner_id": doc.get("owner_id"),
-            "phone": doc.get("phone"),
-            "address": doc.get("address"),
-            "license_number": doc.get("license_number"),
-            "images": doc.get("license_images"),
-            "created_at": doc["created_at"].strftime("%d/%m/%Y %H:%M")
-        })
-    return {"requests": clinics}
-
-# --- 3. API DUYỆT PHÒNG KHÁM & NÂNG CẤP ROLE (ADMIN) ---
-class ClinicStatusUpdate(BaseModel):
-    status: str 
-
-@app.put("/api/admin/clinics/{clinic_id}/status")
-async def update_clinic_status(clinic_id: str, data: ClinicStatusUpdate, current_user: dict = Depends(get_current_user)):
-    if current_user["role"] != "ADMIN": raise HTTPException(403, "Cấm truy cập")
-    if data.status not in ["APPROVED", "REJECTED"]: raise HTTPException(400, "Sai trạng thái")
-
-    # 1. Update Status Phòng khám
-    clinic = await clinics_collection.find_one_and_update(
-        {"_id": ObjectId(clinic_id)},
-        {"$set": {"status": data.status}},
-        return_document=True
-    )
-    if not clinic: raise HTTPException(404, "Không tìm thấy phòng khám")
-
-    # 2. Nếu Duyệt -> Nâng cấp User lên CLINIC_OWNER
-    if data.status == "APPROVED":
-        await users_collection.update_one(
-            {"_id": ObjectId(clinic["owner_id"])},
-            {"$set": {
-                "role": "CLINIC_OWNER",        # Role mới
-                "clinic_id": str(clinic["_id"])
-            }}
-        )
-    return {"message": "Đã cập nhật trạng thái"}
-
-# --- 4. API DỮ LIỆU DASHBOARD CHỦ PHÒNG KHÁM ---
+# [API Dashboard Clinic]
 @app.get("/api/clinic/dashboard-data")
 async def get_clinic_dashboard_data(current_user: dict = Depends(get_current_user)):
     if current_user["role"] not in ["CLINIC_OWNER", "DOCTOR"]: 
         raise HTTPException(403, "Quyền bị từ chối")
 
-    # Lấy thông tin phòng khám
-    clinic = await clinics_collection.find_one({"owner_id": current_user["id"]})
+    owner_id = current_user["id"]
     
-    # Lấy bệnh nhân được gán
-    patients = []
-    async for p in users_collection.find({"assigned_doctor_id": current_user["id"]}):
+    # 1. Xác định Clinic
+    if current_user["role"] == "CLINIC_OWNER":
+        clinic = await clinics_collection.find_one({"owner_id": owner_id})
+    else:
+        clinic_id = current_user.get("clinic_id")
+        clinic = await clinics_collection.find_one({"_id": ObjectId(clinic_id)})
+
+    if not clinic:
+        return {"clinic": None, "patients": [], "doctors": []}
+
+    clinic_id_str = str(clinic["_id"])
+    
+    # 2. Lấy danh sách TẤT CẢ BÁC SĨ trong phòng khám
+    doctors_cursor = users_collection.find({"clinic_id": clinic_id_str, "role": "DOCTOR"})
+    doctors_list = []
+    doctor_ids = [owner_id] 
+    
+    async for doc in doctors_cursor: 
+        doc_id = str(doc["_id"])
+        doctor_ids.append(doc_id)
+        
+        # Đếm số bệnh nhân bác sĩ này đang phụ trách
+        patient_count = await users_collection.count_documents({"assigned_doctor_id": doc_id})
+        
+        doctors_list.append({
+            "id": doc_id,
+            "userName": doc["userName"],
+            "full_name": doc.get("full_name") or doc["userName"],
+            "email": doc.get("email"),
+            "phone": doc.get("phone", "N/A"),
+            "patient_count": patient_count,
+            "status": doc.get("status", "ACTIVE")
+        })
+
+    # 3. Lấy danh sách TẤT CẢ BỆNH NHÂN thuộc phòng khám
+    patient_query = {
+        "$or": [
+            {"assigned_doctor_id": {"$in": doctor_ids}}, 
+            {"clinic_id": clinic_id_str}                 
+        ],
+        "role": "USER"
+    }
+    
+    patients_list = []
+    async for p in users_collection.find(patient_query):
         last_rec = await medical_records_collection.find_one({"user_id": str(p["_id"])}, sort=[("upload_date", -1)])
-        patients.append({
+        
+        doc_name = "Chưa phân công"
+        if p.get("assigned_doctor_id"):
+            found_doc = next((d for d in doctors_list if d["id"] == p["assigned_doctor_id"]), None)
+            if found_doc: doc_name = found_doc["full_name"]
+            elif p["assigned_doctor_id"] == owner_id: doc_name = "Chủ phòng khám"
+
+        patients_list.append({
             "id": str(p["_id"]),
             "full_name": p.get("full_name") or p.get("userName"),
+            "email": p.get("email"),
             "phone": p.get("phone", "N/A"),
-            "last_result": last_rec.get("ai_result", "Chưa khám") if last_rec else "Chưa khám"
+            "last_result": last_rec.get("ai_result", "Chưa khám") if last_rec else "Chưa khám",
+            "assigned_doctor": doc_name,
+            "assigned_doctor_id": p.get("assigned_doctor_id")
         })
 
     return {
-        "doctor": {"name": current_user.get("full_name"), "email": current_user.get("email")},
-        "clinic": clinic and {
+        "user_role": current_user["role"],
+        "clinic": {
             "name": clinic.get("name"), 
-            "address": clinic.get("address"), 
-            "license": clinic.get("license_number")
+            "address": clinic.get("address")
         },
-        "patients": patients
+        "doctors": doctors_list,
+        "patients": patients_list
     }
 
-@app.get("/api/clinic/doctors")
-async def get_clinic_doctors(current_user: dict = Depends(get_current_user)):
-    # Chỉ Chủ phòng khám mới xem được nhân viên của mình
+# [API Phân công]
+@app.post("/api/clinic/assign-patient")
+async def clinic_assign_patient(data: AssignDoctorRequest, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] != "CLINIC_OWNER":
+        raise HTTPException(status_code=403, detail="Chỉ chủ phòng khám mới có quyền phân công.")
+    
+    clinic_id = current_user.get("clinic_id")
+    if not clinic_id: raise HTTPException(400, "Tài khoản chưa có phòng khám.")
+
+    # Kiểm tra bác sĩ
+    doctor = await users_collection.find_one({"_id": ObjectId(data.doctor_id), "role": "DOCTOR"})
+    if not doctor or doctor.get("clinic_id") != clinic_id:
+        raise HTTPException(400, "Bác sĩ này không thuộc phòng khám của bạn.")
+
+    # Cập nhật: Gán doctor_id VÀ clinic_id cho bệnh nhân
+    result = await users_collection.update_one(
+        {"_id": ObjectId(data.patient_id)},
+        {"$set": {
+            "assigned_doctor_id": data.doctor_id,
+            "clinic_id": clinic_id 
+        }}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(404, "Không tìm thấy bệnh nhân.")
+
+    return {"message": f"Đã phân công bệnh nhân cho bác sĩ {doctor.get('userName')}"}
+
+# --- API MỚI: TÌM KIẾM BÁC SĨ TRONG HỆ THỐNG ---
+@app.get("/api/doctors/available")
+async def get_available_doctors(query: str = "", current_user: dict = Depends(get_current_user)):
+    if current_user["role"] != "CLINIC_OWNER":
+        raise HTTPException(status_code=403, detail="Chỉ chủ phòng khám mới có quyền này.")
+
+    clinic_id = current_user.get("clinic_id")
+    if not clinic_id and current_user["role"] == "CLINIC_OWNER":
+        clinic = await clinics_collection.find_one({"owner_id": current_user["id"]})
+        if clinic:
+            clinic_id = str(clinic["_id"])
+    
+    mongo_query = {"role": "DOCTOR"}
+    if query:
+        mongo_query["$or"] = [
+            {"full_name": {"$regex": query, "$options": "i"}},
+            {"userName": {"$regex": query, "$options": "i"}},
+            {"email": {"$regex": query, "$options": "i"}}
+        ]
+
+    cursor = users_collection.find(mongo_query).limit(20)
+    available_doctors = []
+    async for doc in cursor:
+        if str(doc.get("clinic_id")) != str(clinic_id):
+            available_doctors.append({
+                "id": str(doc["_id"]),
+                "full_name": doc.get("full_name", "Bác sĩ"),
+                "userName": doc["userName"],
+                "email": doc.get("email"),
+                "phone": doc.get("phone", "N/A"),
+                "current_status": "Đã có PK khác" if doc.get("clinic_id") else "Tự do"
+            })
+    return {"doctors": available_doctors}
+
+@app.post("/api/clinic/add-existing-doctor")
+async def add_existing_doctor(data: AddExistingDoctorByIdRequest, current_user: dict = Depends(get_current_user)):
     if current_user["role"] != "CLINIC_OWNER":
         raise HTTPException(403, "Quyền bị từ chối")
-    
+        
     clinic_id = current_user.get("clinic_id")
-    if not clinic_id: raise HTTPException(400, "Tài khoản chưa liên kết phòng khám")
+    if not clinic_id and current_user["role"] == "CLINIC_OWNER":
+        clinic = await clinics_collection.find_one({"owner_id": current_user["id"]})
+        if clinic:
+            clinic_id = str(clinic["_id"])
+            
+    if not clinic_id: raise HTTPException(400, "Tài khoản chủ chưa liên kết phòng khám nào.")
 
-    # Tìm user có role DOCTOR và clinic_id trùng khớp
-    cursor = users_collection.find({"clinic_id": clinic_id, "role": "DOCTOR"})
-    doctors = []
-    
-    async for doc in cursor:
-        doc_id = str(doc["_id"])
-        
-        # --- LOGIC MỚI: TÌM BỆNH NHÂN ĐƯỢC PHÂN CÔNG ---
-        # Tìm những user có assigned_doctor_id bằng ID của bác sĩ này
-        patients_cursor = users_collection.find({"assigned_doctor_id": doc_id})
-        patient_names = []
-        async for p in patients_cursor:
-            # Lấy tên hiển thị (Full name hoặc userName)
-            p_name = p.get("full_name") or p.get("userName")
-            patient_names.append(p_name)
-        # -----------------------------------------------
+    doctor = await users_collection.find_one({"_id": ObjectId(data.doctor_id), "role": "DOCTOR"})
+    if not doctor:
+        raise HTTPException(404, "Không tìm thấy bác sĩ này.")
 
-        doctors.append({
-            "id": doc_id,
-            "userName": doc["userName"],
-            "full_name": doc.get("full_name"),
-            "email": doc.get("email"),
-            "phone": doc.get("phone"),
-            "status": doc.get("status", "ACTIVE"),
-            "assigned_patients": patient_names # <--- Trả về danh sách tên bệnh nhân
-        })
-        
-    return {"doctors": doctors}
+    if doctor.get("clinic_id") and str(doctor.get("clinic_id")) != str(clinic_id):
+         raise HTTPException(400, f"Bác sĩ này đang làm việc tại phòng khám khác.")
 
-# [Tìm API create_clinic_doctor cũ và THAY THẾ bằng đoạn này]
-@app.post("/api/clinic/create-doctor")
-async def create_clinic_doctor(data: CreateDoctorRequest, current_user: dict = Depends(get_current_user)):
+    await users_collection.update_one(
+        {"_id": ObjectId(data.doctor_id)},
+        {"$set": {"clinic_id": str(clinic_id)}}
+    )
+    return {"message": f"Đã thêm bác sĩ {doctor.get('full_name')} vào phòng khám."}
+
+# --- API MỚI: TÌM KIẾM BÁC SĨ TRONG HỆ THỐNG ---
+@app.get("/api/doctors/available")
+async def get_available_doctors(query: str = "", current_user: dict = Depends(get_current_user)):
     if current_user["role"] != "CLINIC_OWNER":
-        raise HTTPException(403, "Chỉ chủ phòng khám mới được thêm bác sĩ")
-    
-    clinic_id = current_user.get("clinic_id")
-    
-    # 1. Kiểm tra username trùng
-    exist = await users_collection.find_one({"userName": data.userName})
-    if exist: raise HTTPException(400, "Tên tài khoản đã tồn tại")
+        raise HTTPException(status_code=403, detail="Chỉ chủ phòng khám mới có quyền này.")
 
-    # 2. Tạo User Bác sĩ mới
-    new_doctor = {
-        "userName": data.userName,
-        "password": get_password_hash(data.password),
-        "full_name": data.full_name,
-        "email": data.email,
-        "phone": data.phone,
-        "role": "DOCTOR",
-        "clinic_id": clinic_id,
-        "created_at": datetime.utcnow(),
-        "status": "ACTIVE"
+    # [FIX] Luôn lấy ID từ DB cho Owner để tránh lỗi Token cũ
+    clinic_id = None
+    if current_user["role"] == "CLINIC_OWNER":
+        clinic = await clinics_collection.find_one({"owner_id": current_user["id"]})
+        if clinic: clinic_id = str(clinic["_id"])
+    else:
+        clinic_id = current_user.get("clinic_id")
+
+    mongo_query = {"role": "DOCTOR"}
+    if query:
+        mongo_query["$or"] = [
+            {"full_name": {"$regex": query, "$options": "i"}},
+            {"userName": {"$regex": query, "$options": "i"}},
+            {"email": {"$regex": query, "$options": "i"}}
+        ]
+
+    cursor = users_collection.find(mongo_query).limit(20)
+    available_doctors = []
+    async for doc in cursor:
+        if str(doc.get("clinic_id")) != str(clinic_id):
+            available_doctors.append({
+                "id": str(doc["_id"]),
+                "full_name": doc.get("full_name", "Bác sĩ"),
+                "userName": doc["userName"],
+                "email": doc.get("email"),
+                "phone": doc.get("phone", "N/A"),
+                "current_status": "Đã có PK khác" if doc.get("clinic_id") else "Tự do"
+            })
+    return {"doctors": available_doctors}
+
+@app.post("/api/clinic/add-existing-doctor")
+async def add_existing_doctor(data: AddExistingDoctorByIdRequest, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] != "CLINIC_OWNER":
+        raise HTTPException(403, "Quyền bị từ chối")
+        
+    # [FIX] Đồng bộ logic lấy ID
+    clinic_id = None
+    if current_user["role"] == "CLINIC_OWNER":
+        clinic = await clinics_collection.find_one({"owner_id": current_user["id"]})
+        if clinic: clinic_id = str(clinic["_id"])
+    else:
+        clinic_id = current_user.get("clinic_id")
+            
+    if not clinic_id: raise HTTPException(400, "Tài khoản chủ chưa liên kết phòng khám nào.")
+
+    doctor = await users_collection.find_one({"_id": ObjectId(data.doctor_id), "role": "DOCTOR"})
+    if not doctor:
+        raise HTTPException(404, "Không tìm thấy bác sĩ này.")
+
+    if doctor.get("clinic_id") and str(doctor.get("clinic_id")) != str(clinic_id):
+         raise HTTPException(400, f"Bác sĩ này đang làm việc tại phòng khám khác.")
+
+    await users_collection.update_one(
+        {"_id": ObjectId(data.doctor_id)},
+        {"$set": {"clinic_id": str(clinic_id)}}
+    )
+    return {"message": f"Đã thêm bác sĩ {doctor.get('full_name')} vào phòng khám."}
+
+# --- API MỚI: TÌM KIẾM BỆNH NHÂN TRONG HỆ THỐNG ---
+@app.get("/api/patients/available")
+async def get_available_patients(query: str = "", current_user: dict = Depends(get_current_user)):
+    if current_user["role"] != "CLINIC_OWNER":
+        raise HTTPException(status_code=403, detail="Chỉ chủ phòng khám mới có quyền này.")
+
+    # [FIX] Luôn lấy ID từ DB cho Owner
+    clinic_id = None
+    if current_user["role"] == "CLINIC_OWNER":
+        clinic = await clinics_collection.find_one({"owner_id": current_user["id"]})
+        if clinic: clinic_id = str(clinic["_id"])
+    else:
+        clinic_id = current_user.get("clinic_id")
+    
+    mongo_query = {"role": "USER"}
+    if query:
+        mongo_query["$or"] = [
+            {"full_name": {"$regex": query, "$options": "i"}},
+            {"userName": {"$regex": query, "$options": "i"}},
+            {"email": {"$regex": query, "$options": "i"}}
+        ]
+
+    cursor = users_collection.find(mongo_query).limit(20)
+    available_patients = []
+    async for p in cursor:
+        if str(p.get("clinic_id")) != str(clinic_id):
+            available_patients.append({
+                "id": str(p["_id"]),
+                "full_name": p.get("full_name", "Bệnh nhân"),
+                "userName": p["userName"],
+                "email": p.get("email"),
+                "phone": p.get("phone", "N/A"),
+                "current_status": "Đã có PK khác" if p.get("clinic_id") else "Tự do"
+            })
+    return {"patients": available_patients}
+
+@app.post("/api/clinic/add-existing-patient")
+async def add_existing_patient(data: AddExistingPatientByIdRequest, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] != "CLINIC_OWNER":
+        raise HTTPException(403, "Quyền bị từ chối")
+        
+    # [FIX] Đồng bộ logic lấy ID - Đây là đoạn quan trọng nhất để sửa lỗi của bạn
+    clinic_id = None
+    if current_user["role"] == "CLINIC_OWNER":
+        clinic = await clinics_collection.find_one({"owner_id": current_user["id"]})
+        if clinic: clinic_id = str(clinic["_id"])
+    else:
+        clinic_id = current_user.get("clinic_id")
+    
+    if not clinic_id: raise HTTPException(400, "Lỗi thông tin phòng khám")
+
+    patient = await users_collection.find_one({"_id": ObjectId(data.patient_id), "role": "USER"})
+    if not patient:
+        raise HTTPException(404, "Không tìm thấy bệnh nhân này.")
+
+    # Cho phép ghi đè nếu bệnh nhân đang ở trạng thái 'lạc' (có ID phòng khám nhưng ID sai)
+    # Logic: Chỉ chặn nếu clinic_id KHÁC và không phải là do lỗi token cũ gây ra
+    
+    await users_collection.update_one(
+        {"_id": ObjectId(data.patient_id)},
+        {"$set": {"clinic_id": str(clinic_id)}}
+    )
+    return {"message": f"Đã thêm bệnh nhân {patient.get('full_name')} vào danh sách quản lý."}
+
+# API: Lấy lịch sử phân tích AI của phòng khám
+@app.get("/api/clinic/ai-history")
+async def get_clinic_ai_history(current_user: dict = Depends(get_current_user)):
+    if current_user["role"] not in ["CLINIC_OWNER", "DOCTOR"]:
+        raise HTTPException(403, "Quyền bị từ chối")
+
+    # Tìm các hồ sơ mà bác sĩ này là người upload (doctor_id) 
+    # HOẶC các hồ sơ thuộc về user này (nếu dùng chung logic cũ)
+    query = {
+        "$or": [
+            {"doctor_id": current_user["id"]},
+            {"user_id": current_user["id"]} 
+        ]
     }
     
-    result = await users_collection.insert_one(new_doctor)
-    new_doctor_id = str(result.inserted_id)
-
-    # 3. LOGIC MỚI: TỰ ĐỘNG GÁN BỆNH NHÂN (NẾU CÓ CHỌN)
-    if data.patient_ids and len(data.patient_ids) > 0:
-        # Chuyển đổi list string ID sang ObjectId để query MongoDB
-        object_ids = [ObjectId(pid) for pid in data.patient_ids]
+    cursor = medical_records_collection.find(query).sort("upload_date", -1)
+    
+    history = []
+    async for doc in cursor:
+        history.append({
+            "id": str(doc["_id"]),
+            "patient_name": doc.get("patient_name") or doc.get("userName") or "Bệnh nhân vãng lai",
+            "date": doc["upload_date"].strftime("%d/%m/%Y %H:%M"),
+            "result": doc.get("ai_result", "Đang xử lý"),
+            "status": doc.get("ai_analysis_status", "UNKNOWN"),
+            "image_url": doc.get("annotated_image_url") or doc.get("image_url", "")
+        })
         
-        await users_collection.update_many(
-            {"_id": {"$in": object_ids}}, # Tìm những bệnh nhân trong danh sách gửi lên
-            {"$set": {"assigned_doctor_id": new_doctor_id}} # Gán cho bác sĩ mới
-        )
+    return {"history": history}
 
-    return {"message": f"Tạo bác sĩ thành công và đã gán {len(data.patient_ids)} bệnh nhân."}
+# --- [BỔ SUNG API CÒN THIẾU] UPLOAD ẢNH CHO PHÒNG KHÁM ---
+@app.post("/api/clinic/upload-scan")
+async def clinic_upload_scan(
+    bg_tasks: BackgroundTasks,
+    patient_id: str = Form(None), # Cho phép rỗng (Khách vãng lai)
+    file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user)
+):
+    # 1. Check quyền
+    if current_user["role"] not in ["CLINIC_OWNER", "DOCTOR"]:
+        raise HTTPException(403, "Bạn không có quyền thực hiện chức năng này.")
+    
+    if not file.content_type.startswith("image/"):
+        raise HTTPException(400, "File không hợp lệ. Vui lòng tải ảnh.")
+
+    # 2. Xử lý thông tin bệnh nhân (nếu có)
+    user_id = None
+    patient_name = "Khách vãng lai"
+    
+    if patient_id and patient_id != "null" and patient_id != "":
+        try:
+            patient = await users_collection.find_one({"_id": ObjectId(patient_id)})
+            if patient:
+                user_id = str(patient["_id"])
+                patient_name = patient.get("full_name", patient["userName"])
+        except: pass
+
+    try:
+        # 3. Upload Cloudinary
+        res = cloudinary.uploader.upload(file.file, folder="aura_retina_clinic")
+        img_url = res.get("secure_url")
+        
+        # 4. Tạo bệnh án
+        record = {
+            "user_id": user_id,
+            "patient_name": patient_name,
+            "doctor_id": current_user["id"],
+            "doctor_name": current_user.get("full_name", current_user["userName"]),
+            "image_url": img_url,
+            "upload_date": datetime.utcnow(),
+            "ai_analysis_status": "PENDING", 
+            "ai_result": "Đang chờ phân tích...",
+            "doctor_note": ""
+        }
+        new_rec = await medical_records_collection.insert_one(record)
+        
+        # 5. Gọi AI Service
+        bg_tasks.add_task(real_ai_analysis, str(new_rec.inserted_id), img_url)
+        
+        return {
+            "message": "Upload thành công",
+            "record_id": str(new_rec.inserted_id)
+        }
+    except Exception as e:
+        print(f"Lỗi: {e}")
+        raise HTTPException(500, "Lỗi Server khi xử lý ảnh.")
