@@ -613,15 +613,16 @@ async def register_clinic(
         return {"message": "Đăng ký thành công", "clinic_id": str(res.inserted_id)}
     except Exception as e: raise HTTPException(500, "Lỗi Server")
 
-# [API Dashboard Clinic]
+# [API Dashboard Clinic - ĐÃ SỬA LỖI HIỂN THỊ]
 @app.get("/api/clinic/dashboard-data")
 async def get_clinic_dashboard_data(current_user: dict = Depends(get_current_user)):
+    # 1. Check quyền
     if current_user["role"] not in ["CLINIC_OWNER", "DOCTOR"]: 
         raise HTTPException(403, "Quyền bị từ chối")
 
     owner_id = current_user["id"]
     
-    # 1. Xác định Clinic
+    # 2. Xác định Clinic
     if current_user["role"] == "CLINIC_OWNER":
         clinic = await clinics_collection.find_one({"owner_id": owner_id})
     else:
@@ -632,19 +633,35 @@ async def get_clinic_dashboard_data(current_user: dict = Depends(get_current_use
         return {"clinic": None, "patients": [], "doctors": []}
 
     clinic_id_str = str(clinic["_id"])
+    real_owner_id = str(clinic["owner_id"]) # Lấy ID chủ thực sự
+
+    # 3. Lấy danh sách Bác sĩ
+    # Logic: Tìm người thuộc clinic_id này
+    query_doctors = {
+        "$or": [
+            {"clinic_id": clinic_id_str},
+            {"_id": ObjectId(real_owner_id)}
+        ],
+        "role": {"$in": ["DOCTOR", "doctor"]}
+    }
+
+    doctors_cursor = users_collection.find(query_doctors)
     
-    # 2. Lấy danh sách TẤT CẢ BÁC SĨ trong phòng khám
-    doctors_cursor = users_collection.find({"clinic_id": clinic_id_str, "role": "DOCTOR"})
     doctors_list = []
-    doctor_ids = [owner_id] 
+    doctor_ids = [] 
     
     async for doc in doctors_cursor: 
         doc_id = str(doc["_id"])
+        
+        # Tránh trùng lặp (nếu chủ phòng khám cũng có clinic_id trỏ về chính mình)
+        if doc_id in doctor_ids:
+            continue
+            
         doctor_ids.append(doc_id)
         
         # Đếm số bệnh nhân bác sĩ này đang phụ trách
         patient_count = await users_collection.count_documents({"assigned_doctor_id": doc_id})
-        
+
         doctors_list.append({
             "id": doc_id,
             "userName": doc["userName"],
@@ -652,16 +669,18 @@ async def get_clinic_dashboard_data(current_user: dict = Depends(get_current_use
             "email": doc.get("email"),
             "phone": doc.get("phone", "N/A"),
             "patient_count": patient_count,
-            "status": doc.get("status", "ACTIVE")
+            "status": doc.get("status", "ACTIVE"),
+            "role_display": doc.get("role")
         })
 
-    # 3. Lấy danh sách TẤT CẢ BỆNH NHÂN thuộc phòng khám
+    # 4. Lấy danh sách TẤT CẢ BỆNH NHÂN thuộc phòng khám
+    # Logic: Bệnh nhân được gán cho bác sĩ trong list TRÊN hoặc có clinic_id này
     patient_query = {
         "$or": [
             {"assigned_doctor_id": {"$in": doctor_ids}}, 
             {"clinic_id": clinic_id_str}                 
         ],
-        "role": "USER"
+        "role": {"$in": ["USER", "user"]} # Fix thêm lỗi chữ thường cho user
     }
     
     patients_list = []
@@ -670,10 +689,11 @@ async def get_clinic_dashboard_data(current_user: dict = Depends(get_current_use
         
         doc_name = "Chưa phân công"
         if p.get("assigned_doctor_id"):
+            # Tìm tên bác sĩ trong danh sách đã tải ở trên
             found_doc = next((d for d in doctors_list if d["id"] == p["assigned_doctor_id"]), None)
-            if found_doc: doc_name = found_doc["full_name"]
-            elif p["assigned_doctor_id"] == owner_id: doc_name = "Chủ phòng khám"
-
+            if found_doc: 
+                doc_name = found_doc["full_name"]
+            
         patients_list.append({
             "id": str(p["_id"]),
             "full_name": p.get("full_name") or p.get("userName"),
@@ -694,46 +714,72 @@ async def get_clinic_dashboard_data(current_user: dict = Depends(get_current_use
         "patients": patients_list
     }
 
-# [API Phân công]
+# [API Phân công - ĐÃ SỬA LỖI 400]
 @app.post("/api/clinic/assign-patient")
 async def clinic_assign_patient(data: AssignDoctorRequest, current_user: dict = Depends(get_current_user)):
+    # 1. Check quyền chủ phòng khám
     if current_user["role"] != "CLINIC_OWNER":
         raise HTTPException(status_code=403, detail="Chỉ chủ phòng khám mới có quyền phân công.")
     
-    clinic_id = current_user.get("clinic_id")
-    if not clinic_id: raise HTTPException(400, "Tài khoản chưa có phòng khám.")
+    # 2. Lấy Clinic ID của chủ (xử lý trường hợp lưu string hoặc objectId)
+    if current_user["role"] == "CLINIC_OWNER":
+        clinic_rec = await clinics_collection.find_one({"owner_id": current_user["id"]})
+        clinic_id = str(clinic_rec["_id"]) if clinic_rec else None
+    else:
+        clinic_id = current_user.get("clinic_id")
 
-    # Kiểm tra bác sĩ
-    doctor = await users_collection.find_one({"_id": ObjectId(data.doctor_id), "role": "DOCTOR"})
-    if not doctor or doctor.get("clinic_id") != clinic_id:
-        raise HTTPException(400, "Bác sĩ này không thuộc phòng khám của bạn.")
+    if not clinic_id: 
+        raise HTTPException(400, "Tài khoản chưa có phòng khám.")
 
-    # Cập nhật: Gán doctor_id VÀ clinic_id cho bệnh nhân
+    # 3. Kiểm tra bác sĩ đích (Cho phép Assign cho chính mình hoặc Bác sĩ thuộc Clinic)
+    # SỬA LỖI: Cho phép role là DOCTOR, doctor hoặc CLINIC_OWNER
+    doctor = await users_collection.find_one({
+        "_id": ObjectId(data.doctor_id), 
+        "role": {"$in": ["DOCTOR", "doctor"]}
+    })
+    
+    # Logic kiểm tra: Bác sĩ tồn tại VÀ (Thuộc phòng khám này HOẶC Chính là chủ phòng khám)
+    is_valid_doctor = False
+    if doctor:
+        doc_clinic_id = str(doctor.get("clinic_id", ""))
+        if doc_clinic_id == str(clinic_id):
+            is_valid_doctor = True
+
+    if not is_valid_doctor:
+        raise HTTPException(400, "Bác sĩ này không thuộc phòng khám của bạn hoặc không hợp lệ.")
+
+    # 4. Cập nhật cho bệnh nhân
     result = await users_collection.update_one(
         {"_id": ObjectId(data.patient_id)},
         {"$set": {
             "assigned_doctor_id": data.doctor_id,
-            "clinic_id": clinic_id 
+            "clinic_id": str(clinic_id) 
         }}
     )
+    
     if result.matched_count == 0:
         raise HTTPException(404, "Không tìm thấy bệnh nhân.")
 
-    return {"message": f"Đã phân công bệnh nhân cho bác sĩ {doctor.get('userName')}"}
+    return {"message": f"Đã phân công bệnh nhân cho bác sĩ {doctor.get('full_name', doctor.get('userName'))}"}
 
 # --- API MỚI: TÌM KIẾM BÁC SĨ TRONG HỆ THỐNG ---
+# --- TÌM BÁC SĨ (ĐÃ SỬA LỖI) ---
 @app.get("/api/doctors/available")
 async def get_available_doctors(query: str = "", current_user: dict = Depends(get_current_user)):
     if current_user["role"] != "CLINIC_OWNER":
         raise HTTPException(status_code=403, detail="Chỉ chủ phòng khám mới có quyền này.")
 
-    clinic_id = current_user.get("clinic_id")
-    if not clinic_id and current_user["role"] == "CLINIC_OWNER":
+    # 1. Lấy Clinic ID của chủ phòng khám
+    clinic_id = None
+    if current_user["role"] == "CLINIC_OWNER":
         clinic = await clinics_collection.find_one({"owner_id": current_user["id"]})
-        if clinic:
-            clinic_id = str(clinic["_id"])
+        if clinic: clinic_id = str(clinic["_id"])
+    else:
+        clinic_id = current_user.get("clinic_id")
+
+    # 2. Query linh hoạt: Chấp nhận cả "DOCTOR" và "doctor"
+    mongo_query = {"role": {"$in": ["DOCTOR", "doctor"]}}
     
-    mongo_query = {"role": "DOCTOR"}
     if query:
         mongo_query["$or"] = [
             {"full_name": {"$regex": query, "$options": "i"}},
@@ -741,117 +787,76 @@ async def get_available_doctors(query: str = "", current_user: dict = Depends(ge
             {"email": {"$regex": query, "$options": "i"}}
         ]
 
+    # 3. Lọc danh sách
     cursor = users_collection.find(mongo_query).limit(20)
     available_doctors = []
+    
     async for doc in cursor:
-        if str(doc.get("clinic_id")) != str(clinic_id):
+        doc_clinic_id = doc.get("clinic_id")
+        
+        # Logic lọc: Chỉ ẨN nếu bác sĩ đã thuộc chính xác phòng khám này
+        # (Tránh trường hợp cả 2 đều là None cũng bị ẩn)
+        is_in_my_clinic = False
+        if clinic_id and doc_clinic_id and str(doc_clinic_id) == str(clinic_id):
+            is_in_my_clinic = True
+            
+        if not is_in_my_clinic:
             available_doctors.append({
                 "id": str(doc["_id"]),
                 "full_name": doc.get("full_name", "Bác sĩ"),
                 "userName": doc["userName"],
                 "email": doc.get("email"),
                 "phone": doc.get("phone", "N/A"),
-                "current_status": "Đã có PK khác" if doc.get("clinic_id") else "Tự do"
+                "current_status": "Đã có PK khác" if doc_clinic_id else "Tự do"
             })
+            
     return {"doctors": available_doctors}
 
+# [API Thêm bác sĩ có sẵn - ĐÃ SỬA LỖI 400 & Case Sensitive]
 @app.post("/api/clinic/add-existing-doctor")
 async def add_existing_doctor(data: AddExistingDoctorByIdRequest, current_user: dict = Depends(get_current_user)):
+    # 1. Check quyền
     if current_user["role"] != "CLINIC_OWNER":
         raise HTTPException(403, "Quyền bị từ chối")
         
-    clinic_id = current_user.get("clinic_id")
-    if not clinic_id and current_user["role"] == "CLINIC_OWNER":
-        clinic = await clinics_collection.find_one({"owner_id": current_user["id"]})
-        if clinic:
-            clinic_id = str(clinic["_id"])
-            
-    if not clinic_id: raise HTTPException(400, "Tài khoản chủ chưa liên kết phòng khám nào.")
+    # 2. Lấy Clinic ID chuẩn xác
+    clinic_rec = await clinics_collection.find_one({"owner_id": current_user["id"]})
+    if not clinic_rec:
+         raise HTTPException(400, "Tài khoản chủ chưa liên kết phòng khám nào.")
+    
+    clinic_id = str(clinic_rec["_id"])
 
-    doctor = await users_collection.find_one({"_id": ObjectId(data.doctor_id), "role": "DOCTOR"})
+    # 3. Tìm Bác sĩ (Fix lỗi không tìm thấy nếu role là chữ thường)
+    doctor = await users_collection.find_one({
+        "_id": ObjectId(data.doctor_id), 
+        "role": {"$in": ["DOCTOR", "doctor"]} 
+    })
+    
     if not doctor:
         raise HTTPException(404, "Không tìm thấy bác sĩ này.")
 
-    if doctor.get("clinic_id") and str(doctor.get("clinic_id")) != str(clinic_id):
-         raise HTTPException(400, f"Bác sĩ này đang làm việc tại phòng khám khác.")
-
+    # 4. Kiểm tra xem bác sĩ đã thuộc phòng khám khác chưa
+    current_doc_clinic = doctor.get("clinic_id")
+    
+    # Chỉ báo lỗi nếu clinic_id tồn tại, khác rỗng và KHÁC clinic của bạn
+    if current_doc_clinic and str(current_doc_clinic) != "null" and str(current_doc_clinic) != "":
+        if str(current_doc_clinic) != str(clinic_id):
+             raise HTTPException(400, f"Bác sĩ này đang làm việc tại phòng khám khác (ID: {current_doc_clinic}).")
+    
+    # 5. Cập nhật
     await users_collection.update_one(
         {"_id": ObjectId(data.doctor_id)},
-        {"$set": {"clinic_id": str(clinic_id)}}
+        {"$set": {"clinic_id": clinic_id}}
     )
-    return {"message": f"Đã thêm bác sĩ {doctor.get('full_name')} vào phòng khám."}
+    
+    return {"message": f"Đã thêm bác sĩ {doctor.get('full_name', doctor['userName'])} vào phòng khám."}
 
-# --- API MỚI: TÌM KIẾM BÁC SĨ TRONG HỆ THỐNG ---
-@app.get("/api/doctors/available")
-async def get_available_doctors(query: str = "", current_user: dict = Depends(get_current_user)):
-    if current_user["role"] != "CLINIC_OWNER":
-        raise HTTPException(status_code=403, detail="Chỉ chủ phòng khám mới có quyền này.")
-
-    # [FIX] Luôn lấy ID từ DB cho Owner để tránh lỗi Token cũ
-    clinic_id = None
-    if current_user["role"] == "CLINIC_OWNER":
-        clinic = await clinics_collection.find_one({"owner_id": current_user["id"]})
-        if clinic: clinic_id = str(clinic["_id"])
-    else:
-        clinic_id = current_user.get("clinic_id")
-
-    mongo_query = {"role": "DOCTOR"}
-    if query:
-        mongo_query["$or"] = [
-            {"full_name": {"$regex": query, "$options": "i"}},
-            {"userName": {"$regex": query, "$options": "i"}},
-            {"email": {"$regex": query, "$options": "i"}}
-        ]
-
-    cursor = users_collection.find(mongo_query).limit(20)
-    available_doctors = []
-    async for doc in cursor:
-        if str(doc.get("clinic_id")) != str(clinic_id):
-            available_doctors.append({
-                "id": str(doc["_id"]),
-                "full_name": doc.get("full_name", "Bác sĩ"),
-                "userName": doc["userName"],
-                "email": doc.get("email"),
-                "phone": doc.get("phone", "N/A"),
-                "current_status": "Đã có PK khác" if doc.get("clinic_id") else "Tự do"
-            })
-    return {"doctors": available_doctors}
-
-@app.post("/api/clinic/add-existing-doctor")
-async def add_existing_doctor(data: AddExistingDoctorByIdRequest, current_user: dict = Depends(get_current_user)):
-    if current_user["role"] != "CLINIC_OWNER":
-        raise HTTPException(403, "Quyền bị từ chối")
-        
-    # [FIX] Đồng bộ logic lấy ID
-    clinic_id = None
-    if current_user["role"] == "CLINIC_OWNER":
-        clinic = await clinics_collection.find_one({"owner_id": current_user["id"]})
-        if clinic: clinic_id = str(clinic["_id"])
-    else:
-        clinic_id = current_user.get("clinic_id")
-            
-    if not clinic_id: raise HTTPException(400, "Tài khoản chủ chưa liên kết phòng khám nào.")
-
-    doctor = await users_collection.find_one({"_id": ObjectId(data.doctor_id), "role": "DOCTOR"})
-    if not doctor:
-        raise HTTPException(404, "Không tìm thấy bác sĩ này.")
-
-    if doctor.get("clinic_id") and str(doctor.get("clinic_id")) != str(clinic_id):
-         raise HTTPException(400, f"Bác sĩ này đang làm việc tại phòng khám khác.")
-
-    await users_collection.update_one(
-        {"_id": ObjectId(data.doctor_id)},
-        {"$set": {"clinic_id": str(clinic_id)}}
-    )
-    return {"message": f"Đã thêm bác sĩ {doctor.get('full_name')} vào phòng khám."}
-
-# --- API MỚI: TÌM KIẾM BỆNH NHÂN TRONG HỆ THỐNG ---
+# --- TÌM BỆNH NHÂN (ĐÃ SỬA LỖI) ---
 @app.get("/api/patients/available")
 async def get_available_patients(query: str = "", current_user: dict = Depends(get_current_user)):
     if current_user["role"] != "CLINIC_OWNER":
         raise HTTPException(status_code=403, detail="Chỉ chủ phòng khám mới có quyền này.")
 
-    # [FIX] Luôn lấy ID từ DB cho Owner
     clinic_id = None
     if current_user["role"] == "CLINIC_OWNER":
         clinic = await clinics_collection.find_one({"owner_id": current_user["id"]})
@@ -859,7 +864,8 @@ async def get_available_patients(query: str = "", current_user: dict = Depends(g
     else:
         clinic_id = current_user.get("clinic_id")
     
-    mongo_query = {"role": "USER"}
+    # Chấp nhận cả USER và user
+    mongo_query = {"role": {"$in": ["USER", "user"]}}
     if query:
         mongo_query["$or"] = [
             {"full_name": {"$regex": query, "$options": "i"}},
@@ -870,14 +876,21 @@ async def get_available_patients(query: str = "", current_user: dict = Depends(g
     cursor = users_collection.find(mongo_query).limit(20)
     available_patients = []
     async for p in cursor:
-        if str(p.get("clinic_id")) != str(clinic_id):
+        p_clinic_id = p.get("clinic_id")
+        
+        # Chỉ ẩn nếu bệnh nhân ĐÃ thuộc phòng khám này
+        is_in_my_clinic = False
+        if clinic_id and p_clinic_id and str(p_clinic_id) == str(clinic_id):
+            is_in_my_clinic = True
+
+        if not is_in_my_clinic:
             available_patients.append({
                 "id": str(p["_id"]),
                 "full_name": p.get("full_name", "Bệnh nhân"),
                 "userName": p["userName"],
                 "email": p.get("email"),
                 "phone": p.get("phone", "N/A"),
-                "current_status": "Đã có PK khác" if p.get("clinic_id") else "Tự do"
+                "current_status": "Đã có PK khác" if p_clinic_id else "Tự do"
             })
     return {"patients": available_patients}
 
@@ -995,3 +1008,265 @@ async def clinic_upload_scan(
     except Exception as e:
         print(f"Lỗi: {e}")
         raise HTTPException(500, "Lỗi Server khi xử lý ảnh.")
+    
+# ==========================================
+# CÁC API DÀNH CHO ADMIN (BỔ SUNG)
+# ==========================================
+
+# 1. API Lấy danh sách tất cả User (Cho Tab Người dùng)
+@app.get("/api/admin/users")
+async def get_all_users(current_user: dict = Depends(get_current_user)):
+    # Chỉ Admin mới được xem
+    if current_user["role"] != "ADMIN":
+        raise HTTPException(status_code=403, detail="Quyền truy cập bị từ chối")
+    
+    users_cursor = users_collection.find({})
+    users_list = []
+    async for u in users_cursor:
+        users_list.append({
+            "id": str(u["_id"]),
+            "userName": u["userName"],
+            "email": u.get("email", ""),
+            "role": u.get("role", "USER"),
+            "status": "Active", # Có thể thêm logic status nếu cần
+            "assigned_doctor_id": u.get("assigned_doctor_id")
+        })
+    return {"users": users_list}
+
+# 2. API Lấy danh sách Phòng khám đang chờ duyệt (PENDING)
+@app.get("/api/admin/clinics/pending")
+async def get_pending_clinics(current_user: dict = Depends(get_current_user)):
+    if current_user["role"] != "ADMIN":
+        raise HTTPException(status_code=403, detail="Quyền truy cập bị từ chối")
+    
+    # Tìm các phòng khám có status = 'PENDING'
+    cursor = clinics_collection.find({"status": "PENDING"})
+    requests = []
+    async for doc in cursor:
+        requests.append({
+            "id": str(doc["_id"]),
+            "name": doc["name"],
+            "owner_name": doc["owner_name"],
+            "owner_id": doc["owner_id"],
+            "phone": doc["phone"],
+            "address": doc["address"],
+            "license_number": doc["license_number"],
+            "images": doc.get("license_images", {"front": None, "back": None}),
+            "created_at": doc["created_at"].strftime("%Y-%m-%d %H:%M:%S")
+        })
+    
+    return {"requests": requests}
+
+# 3. API Duyệt hoặc Từ chối Phòng khám
+@app.put("/api/admin/clinics/{clinic_id}/status")
+async def update_clinic_status(
+    clinic_id: str, 
+    data: ClinicStatusUpdate, # Model này đã khai báo ở đầu file main.py
+    current_user: dict = Depends(get_current_user)
+):
+    if current_user["role"] != "ADMIN":
+        raise HTTPException(status_code=403, detail="Quyền truy cập bị từ chối")
+    
+    # Tìm phòng khám
+    clinic = await clinics_collection.find_one({"_id": ObjectId(clinic_id)})
+    if not clinic:
+        raise HTTPException(404, "Không tìm thấy phòng khám")
+        
+    # Cập nhật trạng thái phòng khám (APPROVED / REJECTED)
+    await clinics_collection.update_one(
+        {"_id": ObjectId(clinic_id)},
+        {"$set": {"status": data.status}}
+    )
+    
+    # QUAN TRỌNG: Nếu DUYỆT (APPROVED), phải nâng User lên làm CLINIC_OWNER
+    if data.status == "APPROVED":
+        owner_id = clinic["owner_id"]
+        await users_collection.update_one(
+            {"_id": ObjectId(owner_id)},
+            {"$set": {"role": "CLINIC_OWNER"}}
+        )
+        
+    return {"message": f"Đã cập nhật trạng thái thành {data.status}"}
+
+# ==========================================
+# CÁC API DÀNH CHO CHAT & BÁC SĨ (BỔ SUNG CÒN THIẾU)
+# ==========================================
+
+# 1. API Lấy danh sách bệnh nhân RIÊNG của Bác sĩ (My Patients)
+@app.get("/api/doctor/my-patients")
+async def get_my_patients(current_user: dict = Depends(get_current_user)):
+    if current_user["role"] != "DOCTOR":
+        raise HTTPException(status_code=403, detail="Chỉ bác sĩ mới có quyền này.")
+    
+    # Tìm tất cả user có assigned_doctor_id trùng với ID bác sĩ đang đăng nhập
+    cursor = users_collection.find({"assigned_doctor_id": current_user["id"]})
+    
+    patients_list = []
+    async for p in cursor:
+        # Lấy kết quả khám gần nhất
+        last_rec = await medical_records_collection.find_one(
+            {"user_id": str(p["_id"])}, 
+            sort=[("upload_date", -1)]
+        )
+        
+        patients_list.append({
+            "id": str(p["_id"]),
+            "full_name": p.get("full_name") or p.get("userName"),
+            "email": p.get("email"),
+            "phone": p.get("phone", "N/A"),
+            "age": p.get("age", "N/A"),
+            "gender": p.get("gender", "N/A"),
+            "last_result": last_rec.get("ai_result", "Chưa khám") if last_rec else "Chưa khám",
+            "last_visit": last_rec["upload_date"].strftime("%d/%m/%Y") if last_rec else "N/A"
+        })
+        
+    return {"patients": patients_list}
+# [API Lấy danh sách Chat - NÂNG CẤP: Tự hiện người được phân công]
+@app.get("/api/chats")
+async def get_chat_list(current_user: dict = Depends(get_current_user)):
+    user_id = current_user["id"]
+    chat_partners = {}
+    
+    # ---------------------------------------------------------
+    # BƯỚC 1: LẤY NHỮNG NGƯỜI ĐÃ TỪNG NHẮN TIN (LOGIC CŨ)
+    # ---------------------------------------------------------
+    cursor = messages_collection.find({
+        "$or": [{"sender_id": user_id}, {"receiver_id": user_id}]
+    }).sort("timestamp", -1)
+
+    messages = await cursor.to_list(length=1000)
+    
+    for msg in messages:
+        partner_id = msg["receiver_id"] if msg["sender_id"] == user_id else msg["sender_id"]
+        if partner_id in chat_partners: continue
+            
+        partner = await users_collection.find_one({"_id": ObjectId(partner_id)})
+        if not partner: continue
+        # --- LOGIC MỚI: Đếm tin nhắn chưa đọc từ người này gửi cho mình ---
+        unread_count = await messages_collection.count_documents({
+            "sender_id": partner_id,   # Người gửi là đối phương
+            "receiver_id": user_id,    # Người nhận là mình
+            "is_read": False           # Trạng thái chưa xem
+        })
+        
+        chat_partners[partner_id] = {
+            "id": partner_id,
+            "sender": partner.get("userName"),
+            "full_name": partner.get("full_name") or partner.get("userName"),
+            "role": partner.get("role"),
+            "preview": ("Bạn: " if msg["sender_id"] == user_id else "") + msg["content"],
+            "time": msg["timestamp"].strftime("%H:%M"),
+            "timestamp": msg["timestamp"],
+            "unread": unread_count > 0
+        }
+
+    # ---------------------------------------------------------
+    # BƯỚC 2: TỰ ĐỘNG THÊM NGƯỜI ĐƯỢC PHÂN CÔNG (NẾU CHƯA CHAT)
+    # ---------------------------------------------------------
+    
+    # TRƯỜNG HỢP 1: NẾU LÀ BÁC SĨ -> Tự thêm các Bệnh nhân của mình vào list
+    if current_user["role"] == "DOCTOR":
+        my_patients = users_collection.find({"assigned_doctor_id": user_id})
+        async for p in my_patients:
+            p_id = str(p["_id"])
+            # Chỉ thêm nếu chưa có trong danh sách chat
+            if p_id not in chat_partners:
+                chat_partners[p_id] = {
+                    "id": p_id,
+                    "sender": p["userName"],
+                    "full_name": p.get("full_name") or p["userName"],
+                    "role": "USER",
+                    "preview": "👋 Bắt đầu cuộc trò chuyện ngay!", # Tin nhắn mặc định
+                    "time": "",
+                    "timestamp": datetime.min, # Xếp cuối cùng
+                    "unread": False
+                }
+
+    # TRƯỜNG HỢP 2: NẾU LÀ BỆNH NHÂN -> Tự thêm Bác sĩ phụ trách vào list
+    elif current_user.get("role") in ["USER", "user"]:
+        doc_id = current_user.get("assigned_doctor_id")
+        if doc_id and doc_id not in chat_partners:
+            doctor = await users_collection.find_one({"_id": ObjectId(doc_id)})
+            if doctor:
+                chat_partners[doc_id] = {
+                    "id": doc_id,
+                    "sender": doctor["userName"],
+                    "full_name": doctor.get("full_name") or doctor["userName"],
+                    "role": "DOCTOR",
+                    "preview": "Xin chào, tôi cần tư vấn...",
+                    "time": "",
+                    "timestamp": datetime.min,
+                    "unread": False
+                }
+
+
+    # ---------------------------------------------------------
+    # BƯỚC 3: SẮP XẾP VÀ TRẢ VỀ
+    # ---------------------------------------------------------
+    result = list(chat_partners.values())
+    # Sắp xếp: Tin nhắn mới nhất lên đầu, người chưa chat nằm dưới cùng
+    result.sort(key=lambda x: x["timestamp"], reverse=True)
+    
+    return {"chats": result}
+
+# [API MỚI] Đánh dấu đã đọc tin nhắn
+@app.put("/api/chat/read/{partner_id}")
+async def mark_messages_read(partner_id: str, current_user: dict = Depends(get_current_user)):
+    # Cập nhật tất cả tin nhắn từ partner gửi cho mình -> is_read = True
+    await messages_collection.update_many(
+        {
+            "sender_id": partner_id, 
+            "receiver_id": current_user["id"], 
+            "is_read": False
+        },
+        {"$set": {"is_read": True}}
+    )
+    return {"message": "Đã xem"}
+
+# 3. API Lấy lịch sử tin nhắn với 1 người cụ thể
+@app.get("/api/chat/history/{partner_id}")
+async def get_chat_history(partner_id: str, current_user: dict = Depends(get_current_user)):
+    user_id = current_user["id"]
+    
+    # Lấy tin nhắn giữa 2 người
+    cursor = messages_collection.find({
+        "$or": [
+            {"sender_id": user_id, "receiver_id": partner_id},
+            {"sender_id": partner_id, "receiver_id": user_id}
+        ]
+    }).sort("timestamp", 1) # Sắp xếp cũ -> mới
+    
+    msgs = []
+    async for m in cursor:
+        msgs.append({
+            "id": str(m["_id"]),
+            "content": m["content"],
+            "is_me": (m["sender_id"] == user_id),
+            "time": m["timestamp"].strftime("%H:%M")
+        })
+        
+    return {"messages": msgs}
+
+# 4. API Gửi tin nhắn
+@app.post("/api/chat/send")
+async def send_message(data: SendMessageRequest, current_user: dict = Depends(get_current_user)):
+    # Validate receiver
+    try:
+        receiver = await users_collection.find_one({"_id": ObjectId(data.receiver_id)})
+        if not receiver:
+            raise HTTPException(404, "Người nhận không tồn tại")
+    except:
+         # Fix lỗi nếu receiver_id là 'system' hoặc id rác
+         if data.receiver_id == 'system': return {"message": "System chat"}
+         raise HTTPException(400, "ID người nhận không hợp lệ")
+        
+    new_msg = {
+        "sender_id": current_user["id"],
+        "receiver_id": data.receiver_id,
+        "content": data.content,
+        "timestamp": datetime.utcnow(),
+        "is_read": False
+    }
+    
+    await messages_collection.insert_one(new_msg)
+    return {"message": "Đã gửi tin nhắn"}

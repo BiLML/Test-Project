@@ -310,7 +310,8 @@ const ClinicDashboard: React.FC = () => {
                                 <table style={styles.table}>
                                     <thead><tr><th style={styles.th}>BÁC SĨ</th><th style={styles.th}>LIÊN HỆ</th><th style={styles.th}>TRẠNG THÁI</th><th style={styles.th}>SỐ BỆNH NHÂN</th></tr></thead>
                                     <tbody>
-                                        {doctors.map(d => (
+                                        {doctors
+                                            .map(d => (
                                             <tr key={d.id} style={styles.tr}>
                                                 <td style={styles.td}><b>{d.full_name}</b><br/><small style={{color:'#888'}}>@{d.userName}</small></td>
                                                 <td style={styles.td}>{d.email}<br/>{d.phone}</td>

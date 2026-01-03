@@ -119,6 +119,21 @@ const Dashboard: React.FC = () => {
         }
         const msgs = await fetchMessageHistory(partnerId);
         if (msgs) setCurrentMessages(msgs);
+        // 3. [MỚI] Gọi API đánh dấu đã đọc
+        const token = localStorage.getItem('token');
+        if (token) {
+            // Cập nhật giao diện ngay lập tức (Xóa chấm đỏ client-side để ko bị delay)
+            setChatData(prev => prev.map(c => 
+                c.id === partnerId ? { ...c, unread: false } : c
+            ));
+
+            // Gọi server cập nhật DB
+            await fetch(`http://127.0.0.1:8000/api/chat/read/${partnerId}`, {
+                method: 'PUT',
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+        }
+
         fetchChatData(); 
     };
     const checkRoleAndRedirect = useCallback(async () => {
@@ -217,7 +232,7 @@ const Dashboard: React.FC = () => {
         try {
             // KHỞI TẠO FORMDATA ĐỂ GỬI FILE
             const formData = new FormData();
-            formData.append('name', clinicForm.name);
+            formData.append('clinicName', clinicForm.name);
             formData.append('address', clinicForm.address);
             formData.append('phone', clinicForm.phone);
             formData.append('license', clinicForm.license);

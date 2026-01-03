@@ -134,7 +134,21 @@ const DashboardDr: React.FC = () => {
         if (msgs) setCurrentMessages(msgs);
         
         const token = localStorage.getItem('token');
-        if(token) fetchChatData(token); 
+        if (token) {
+            // 2. [MỚI] Cập nhật giao diện xóa chấm đỏ ngay lập tức (Client-side)
+            setChatData(prev => prev.map(c => 
+                c.id === partnerId ? { ...c, unread: false } : c
+            ));
+
+            // 3. [MỚI] Gọi API báo Server là đã đọc tin nhắn này
+            await fetch(`http://127.0.0.1:8000/api/chat/read/${partnerId}`, {
+                method: 'PUT',
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            
+            // 4. Refresh lại dữ liệu để đồng bộ
+            fetchChatData(token);
+        }
     };
 
     // --- 3. HÀM GỬI TIN NHẮN (OPTIMISTIC UPDATE CHUẨN) ---
