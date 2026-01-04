@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { FaDatabase, FaUserMd } from 'react-icons/fa';
 import { useNavigate } from 'react-router-dom';
 
 interface User {
@@ -26,7 +27,7 @@ const DashboardAdmin: React.FC = () => {
     const navigate = useNavigate();
     
     // --- STATE ---
-    const [activeTab, setActiveTab] = useState<'users' | 'clinics'>('users');
+    const [activeTab, setActiveTab] = useState<'users' | 'clinics' | 'feedback'>('users'); 
     const [adminName, setAdminName] = useState('Admin');
     const [isLoading, setIsLoading] = useState(true);
 
@@ -34,6 +35,7 @@ const DashboardAdmin: React.FC = () => {
     const [doctorList, setDoctorList] = useState<User[]>([]); 
     const [clinicRequests, setClinicRequests] = useState<ClinicRequest[]>([]);
 
+    const [feedbackList, setFeedbackList] = useState<any[]>([]); // Danh sách phản hồi
     // --- FETCH DATA ---
     const fetchData = useCallback(async () => {
         const token = localStorage.getItem('token');
@@ -57,6 +59,14 @@ const DashboardAdmin: React.FC = () => {
             if (clinicRes.ok) {
                 const data = await clinicRes.json();
                 setClinicRequests(data.requests);
+            }
+
+            const reportRes = await fetch('http://127.0.0.1:8000/api/admin/reports', { 
+                headers: { 'Authorization': `Bearer ${token}` } 
+            });
+            if (reportRes.ok) {
+                const data = await reportRes.json();
+                setFeedbackList(data.reports);
             }
 
         } catch (error) {
@@ -106,6 +116,7 @@ const DashboardAdmin: React.FC = () => {
             <div style={{display: 'flex', gap: '10px', marginBottom: '20px'}}>
                 <button onClick={() => setActiveTab('users')} style={activeTab === 'users' ? styles.tabActive : styles.tabInactive}>👥 Người dùng</button>
                 <button onClick={() => setActiveTab('clinics')} style={activeTab === 'clinics' ? styles.tabActive : styles.tabInactive}>🏥 Duyệt Phòng khám ({clinicRequests.length})</button>
+                <button onClick={() => setActiveTab('feedback')} style={activeTab === 'feedback' ? styles.tabActive : styles.tabInactive}>🧠 Dữ liệu Huấn luyện AI</button>
             </div>
 
             {activeTab === 'users' && (
@@ -167,6 +178,61 @@ const DashboardAdmin: React.FC = () => {
                             </tbody>
                         </table>
                     )}
+                </div>
+            )}
+
+            {activeTab === 'feedback' && (
+                <div style={styles.card}>
+                    <h3>Dữ liệu Huấn luyện AI (Feedback từ Bác sĩ)</h3>
+                    <table style={styles.table}>
+                        <thead>
+                            <tr>
+                                <th>Ngày tạo</th>
+                                <th>Bác sĩ</th>
+                                <th>Bệnh nhân</th>
+                                <th>Kết quả AI</th>
+                                <th>Chẩn đoán thật (Bác sĩ)</th>
+                                <th>Đánh giá</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {feedbackList.length === 0 ? (
+                                <tr><td colSpan={6} style={{padding:'20px', textAlign:'center'}}>Chưa có dữ liệu huấn luyện.</td></tr>
+                            ) : (
+                                feedbackList.map(item => (
+                                    <tr key={item.id}>
+                                        {/* Lưu ý: Backend trả về chuỗi ISO date, ta format lại hiển thị */}
+                                        <td style={styles.td}>{new Date(item.created_at).toLocaleDateString('vi-VN')}</td>
+                                        
+                                        {/* Các key khớp với Python: doctor_name, patient_name... */}
+                                        <td style={styles.td}><b>{item.doctor_name}</b></td>
+                                        <td style={styles.td}>{item.patient_name}</td>
+                                        
+                                        <td style={styles.td}>
+                                            <span style={{color:'red'}}>{item.ai_result}</span>
+                                        </td>
+                                        
+                                        <td style={styles.td}>
+                                            <b style={{color:'#28a745'}}>{item.doctor_diagnosis}</b>
+                                            {item.notes && <div style={{fontSize:'12px', color:'#666', marginTop:'4px'}}>Note: {item.notes}</div>}
+                                        </td>
+                                        
+                                        <td style={styles.td}>
+                                            {item.accuracy === 'INCORRECT' ? (
+                                                <span style={{background:'#fdecea', color:'#c0392b', padding:'4px 8px', borderRadius:'4px', fontWeight:'bold', fontSize:'12px'}}>
+                                                    ⚠️ Sai lệch
+                                                </span>
+                                            ) : (
+                                                <span style={{background:'#e8f5e9', color:'#27ae60', padding:'4px 8px', borderRadius:'4px', fontWeight:'bold', fontSize:'12px'}}>
+                                                    ✅ Chính xác
+                                                </span>
+                                            )}
+                                        </td>
+                                    </tr>
+                                ))
+                            )}
+                        </tbody>
+                    </table>
                 </div>
             )}
         </div>

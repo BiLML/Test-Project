@@ -69,6 +69,7 @@ users_collection = db.users
 medical_records_collection = db.medical_records
 messages_collection = db.messages
 clinics_collection = db.clinics
+reports_collection = db.reports 
 
 # Cấu hình Bảo mật
 SECRET_KEY = os.getenv("SECRET_KEY")
@@ -126,6 +127,7 @@ class AssignDoctorRequest(BaseModel):
 
 class DoctorNoteRequest(BaseModel):
     doctor_note: str
+    doctor_diagnosis: str = None
 
 class SendMessageRequest(BaseModel):
     receiver_id: str
@@ -147,6 +149,14 @@ class AddExistingDoctorByIdRequest(BaseModel):
 
 class AddExistingPatientByIdRequest(BaseModel):
     patient_id: str
+
+# [MODEL CHO BÁO CÁO FR-19]
+class ReportSubmitRequest(BaseModel):
+    patient_id: str
+    ai_result: str
+    doctor_diagnosis: str
+    accuracy: str # 'CORRECT' hoặc 'INCORRECT'
+    notes: str = None
 
 # --- HÀM XỬ LÝ TIẾNG VIỆT ---
 def remove_accents(input_str):
@@ -414,14 +424,24 @@ async def get_single_record(record_id: str, current_user: dict = Depends(get_cur
 async def update_doctor_note(record_id: str, data: DoctorNoteRequest, current_user: dict = Depends(get_current_user)):
     if current_user["role"] != "DOCTOR":
         raise HTTPException(status_code=43, detail="Chỉ Bác sĩ mới có quyền thêm ghi chú.")
+# Tạo dict update động (có gì update nấy)
+    update_data = {}
+    if data.doctor_note is not None:
+        update_data["doctor_note"] = data.doctor_note
+    if data.doctor_diagnosis is not None:
+        update_data["doctor_diagnosis"] = data.doctor_diagnosis # Lưu chẩn đoán thật vào DB
+        
+    if not update_data:
+        raise HTTPException(400, "Không có dữ liệu để lưu")
+
     try:
         result = await medical_records_collection.update_one(
             {"_id": ObjectId(record_id)},
-            {"$set": {"doctor_note": data.doctor_note}}
+            {"$set": update_data}
         )
-        if result.matched_count == 0: raise HTTPException(status_code=404, detail="Không tìm thấy hồ sơ.")
-        return {"message": "Đã lưu ghi chú bác sĩ."}
-    except Exception as e: raise HTTPException(status_code=500, detail="Lỗi server.")
+        return {"message": "Đã lưu thông tin chẩn đoán."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Lỗi server.")
 
 @app.get("/api/medical-records/patient/{patient_id}")
 async def get_patient_history(patient_id: str, current_user: dict = Depends(get_current_user)):
@@ -1270,3 +1290,86 @@ async def send_message(data: SendMessageRequest, current_user: dict = Depends(ge
     
     await messages_collection.insert_one(new_msg)
     return {"message": "Đã gửi tin nhắn"}
+
+# ============================================================
+# TÍNH NĂNG [FR-19]: BÁO CÁO CHUYÊN MÔN & HUẤN LUYỆN AI
+# ============================================================
+
+# 1. API: Bác sĩ gửi báo cáo (Feedback)
+@app.post("/api/reports")
+async def submit_report(data: ReportSubmitRequest, current_user: dict = Depends(get_current_user)):
+    # Chỉ cho phép Bác sĩ gửi
+    if current_user["role"] != "DOCTOR":
+        raise HTTPException(status_code=403, detail="Chỉ Bác sĩ mới có quyền gửi báo cáo chuyên môn.")
+
+    try:
+        # Lấy thông tin bệnh nhân để lưu cứng vào báo cáo (giúp Admin xem nhanh hơn)
+        patient = await users_collection.find_one({"_id": ObjectId(data.patient_id)})
+        patient_name = patient.get("full_name") or patient.get("userName") if patient else "Unknown"
+
+        new_report = {
+            "doctor_id": current_user["id"],
+            "doctor_name": current_user.get("full_name") or current_user["userName"],
+            "patient_id": data.patient_id,
+            "patient_name": patient_name,
+            "ai_result": data.ai_result,            # Kết quả AI chẩn đoán
+            "doctor_diagnosis": data.doctor_diagnosis, # Kết quả thật (Ground Truth)
+            "accuracy": data.accuracy,              # CORRECT / INCORRECT
+            "notes": data.notes,
+            "created_at": datetime.utcnow(),
+            "status": "PENDING"                     # Trạng thái xử lý của Admin
+        }
+
+        await reports_collection.insert_one(new_report)
+        return {"message": "Đã gửi báo cáo thành công. Cảm ơn đóng góp của bạn!"}
+
+    except Exception as e:
+        print(f"Lỗi tạo báo cáo: {e}")
+        raise HTTPException(status_code=500, detail="Lỗi server khi lưu báo cáo.")
+
+# 2. API: Bác sĩ xem lịch sử báo cáo của chính mình
+@app.get("/api/reports/me")
+async def get_my_reports(current_user: dict = Depends(get_current_user)):
+    if current_user["role"] != "DOCTOR":
+        raise HTTPException(status_code=403, detail="Quyền truy cập bị từ chối.")
+
+    cursor = reports_collection.find({"doctor_id": current_user["id"]}).sort("created_at", -1)
+    
+    reports = []
+    async for doc in cursor:
+        # Xác định loại báo cáo để hiển thị UI
+        rpt_type = "Xác nhận KQ" if doc["accuracy"] == "CORRECT" else "Báo cáo sai lệch AI"
+        
+        reports.append({
+            "id": str(doc["_id"]),
+            "date": doc["created_at"].strftime("%d/%m/%Y"),
+            "patient": doc["patient_name"],
+            "type": rpt_type, 
+            "status": "Đã gửi" # Có thể update nếu Admin đã xem
+        })
+        
+    return {"reports": reports}
+
+# 3. API: Admin xem toàn bộ báo cáo để huấn luyện lại AI
+@app.get("/api/admin/reports")
+async def get_all_reports_for_admin(current_user: dict = Depends(get_current_user)):
+    if current_user["role"] != "ADMIN":
+        raise HTTPException(status_code=403, detail="Chỉ Admin mới được xem dữ liệu huấn luyện.")
+
+    cursor = reports_collection.find({}).sort("created_at", -1)
+    
+    results = []
+    async for doc in cursor:
+        results.append({
+            "id": str(doc["_id"]),
+            "created_at": doc["created_at"], # Frontend tự format date
+            "doctor_name": doc["doctor_name"],
+            "patient_name": doc["patient_name"],
+            "ai_result": doc["ai_result"],
+            "doctor_diagnosis": doc["doctor_diagnosis"],
+            "accuracy": doc["accuracy"],
+            "notes": doc.get("notes", ""),
+            "status": doc.get("status", "PENDING")
+        })
+
+    return {"reports": results}
