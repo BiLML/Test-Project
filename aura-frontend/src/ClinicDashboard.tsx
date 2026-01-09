@@ -1,26 +1,31 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { 
     FaSearch, FaSignOutAlt, FaUserMd, FaRobot, FaUpload, FaSpinner,
     FaBoxOpen, FaChartLine, FaFileExport, FaExclamationTriangle,
     FaClipboardList, FaUserCircle, FaUserPlus, FaStethoscope, FaEdit, FaTrash, FaEye,
-    FaHistory, FaArrowRight 
+    FaHistory, FaArrowRight, FaCamera, FaTimes 
 } from 'react-icons/fa';
 
 // --- INTERFACES ---
 interface Patient {
     id: string;
+    username: string;
     full_name: string;
     phone: string;
     email?: string;
-    last_result: string;
-    assigned_doctor: string;
+    latest_scan?: {
+        ai_result: string;
+        ai_analysis_status: string;
+        upload_date: string;
+    } | null;
+    assigned_doctor?: string;
     assigned_doctor_id?: string;
 }
 
 interface Doctor {
     id: string;
-    userName: string;
+    username: string;
     full_name: string;
     email: string;
     phone: string;
@@ -44,26 +49,21 @@ const ClinicDashboard: React.FC = () => {
     
     // --- STATE DATA ---
     const [clinicName, setClinicName] = useState('Phòng khám AURA');
+    const [adminName, setAdminName] = useState('Clinic Admin'); // <--- Thêm state này
     const [patients, setPatients] = useState<Patient[]>([]);
     const [doctors, setDoctors] = useState<Doctor[]>([]);
     const [loading, setLoading] = useState(true);
 
-    // --- STATE MOCK SERVICES ---
+    // --- STATE MOCK SERVICES (Dữ liệu mẫu cho phần dịch vụ) ---
     const [services, setServices] = useState<Service[]>([
         { id: 1, name: "Khám mắt tổng quát", price: "200.000 đ", description: "Kiểm tra thị lực, đo nhãn áp" },
         { id: 2, name: "Chụp đáy mắt AI", price: "500.000 đ", description: "Sử dụng AI AURA phát hiện bệnh lý võng mạc" },
     ]);
 
-    // --- STATE AI ANALYSIS ---
-    const [aiPatientId, setAiPatientId] = useState('');
-    const [aiFile, setAiFile] = useState<File | null>(null);
-    const [aiPreview, setAiPreview] = useState<string | null>(null);
-    const [isAnalyzing, setIsAnalyzing] = useState(false);
-    const [analysisResult, setAnalysisResult] = useState<any>(null);
+    // --- STATE AI ANALYSIS & UPLOAD ---
     const [aiHistory, setAiHistory] = useState<any[]>([]);
-    const fileInputRef = useRef<HTMLInputElement>(null);
-
-    // --- STATE MODALS ---
+    
+    // --- STATE MODALS QUẢN LÝ ---
     const [showAssignModal, setShowAssignModal] = useState(false);
     const [selectedPatient, setSelectedPatient] = useState<Patient | null>(null);
     const [targetDoctorId, setTargetDoctorId] = useState('');
@@ -76,184 +76,235 @@ const ClinicDashboard: React.FC = () => {
     const [searchPatientTerm, setSearchPatientTerm] = useState('');
     const [availablePatients, setAvailablePatients] = useState<any[]>([]);
 
-    // --- FETCH DATA ---
-    const fetchDashboardData = async () => {
+    // Refs
+    const userMenuRef = useRef<HTMLDivElement>(null);
+
+    // --- 1. FETCH DATA (General) ---
+    const fetchDashboardData = useCallback(async () => {
         const token = localStorage.getItem('token');
         if (!token) { navigate('/login'); return; }
 
         try {
-            const res = await fetch('http://127.0.0.1:8000/api/clinic/dashboard-data', {
+            const res = await fetch('http://localhost:8000/api/v1/clinics/dashboard-data', {
                 headers: { 'Authorization': `Bearer ${token}` }
             });
             if (res.ok) {
                 const data = await res.json();
                 setClinicName(data.clinic?.name || "Phòng khám AURA");
-                setPatients(data.patients);
-                setDoctors(data.doctors);
+                setAdminName(data.admin_name || "Clinic Admin");
+                setPatients(data.patients || []);
+                setDoctors(data.doctors || []);
+
             }
-        } catch (error) { console.error(error); } finally { setLoading(false); }
-    };
-
-    useEffect(() => { fetchDashboardData(); }, []);
-
-    // --- LOGIC AI ANALYSIS ---
-    const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-        if (e.target.files && e.target.files[0]) {
-            const file = e.target.files[0];
-            setAiFile(file);
-            setAiPreview(URL.createObjectURL(file));
-            setAnalysisResult(null); // Reset kết quả cũ
+        } catch (error) { 
+            console.error("Lỗi tải dashboard:", error); 
+        } finally { 
+            setLoading(false); 
         }
-    };
+    }, [navigate]);
 
-    const handleAnalyze = async () => {
-        if (!aiPatientId) return alert("Vui lòng chọn bệnh nhân!");
-        if (!aiFile) return alert("Vui lòng chọn ảnh!");
+// --- 2. FETCH AI HISTORY ---
+// --- Trong file ClinicDashboard.tsx ---
 
-        setIsAnalyzing(true);
-        const token = localStorage.getItem('token');
-        const formData = new FormData();
-        formData.append('patient_id', aiPatientId);
-        formData.append('file', aiFile);
+const fetchAiHistory = useCallback(async () => {
+    const token = localStorage.getItem('token');
+    if (!token) return;
+    try {
+        const res = await fetch('http://localhost:8000/api/v1/medical-records/clinic-history', {
+            headers: { 'Authorization': `Bearer ${token}` }
+        });
 
-        try {
-            // 1. Upload ảnh & Tạo hồ sơ
-            const res = await fetch('http://127.0.0.1:8000/api/clinic/upload-scan', {
-                method: 'POST',
-                headers: { 'Authorization': `Bearer ${token}` },
-                body: formData
-            });
-
-            if (!res.ok) throw new Error("Lỗi upload");
-            
+        if (res.ok) {
             const data = await res.json();
-            const recordId = data.record_id;
-
-            // 2. Polling để lấy kết quả AI (Chờ tối đa 10s)
-            let attempts = 0;
-            const interval = setInterval(async () => {
-                attempts++;
-                const pollRes = await fetch(`http://127.0.0.1:8000/api/clinic/record/${recordId}`, {
-                    headers: { 'Authorization': `Bearer ${token}` }
-                });
-                if (pollRes.ok) {
-                    const recordData = await pollRes.json();
-                    if (recordData.status === 'COMPLETED' || recordData.status === 'FAILED') {
-                        clearInterval(interval);
-                        setAnalysisResult(recordData);
-                        setIsAnalyzing(false);
-                        fetchDashboardData(); // Refresh lại danh sách tổng hợp
-                    }
-                }
-                if (attempts > 20) { // Timeout sau 40s
-                    clearInterval(interval);
-                    setIsAnalyzing(false);
-                    alert("AI đang xử lý lâu hơn dự kiến. Vui lòng kiểm tra lại lịch sử sau.");
-                }
-            }, 2000);
-
-        } catch (error) {
-            console.error(error);
-            setIsAnalyzing(false);
-            alert("Có lỗi xảy ra khi phân tích.");
+            
+            // Backend trả về list trực tiếp
+            const list = Array.isArray(data) ? data : (data.history || []);
+            
+            const mappedHistory = list.map((item: any) => ({
+                id: item.id,
+                // Format ngày tháng
+                date: item.created_at ? new Date(item.created_at).toLocaleDateString('vi-VN') : "Vừa xong",
+                time: item.created_at ? new Date(item.created_at).toLocaleTimeString('vi-VN', {hour: '2-digit', minute:'2-digit'}) : "",
+                
+                // QUAN TRỌNG: Lấy tên bệnh nhân. 
+                // Nếu backend chưa join bảng User, nó có thể null -> hiển thị tạm ID hoặc placeholder
+                patient_name: item.user ? item.user.full_name : (item.patient_name || `Bệnh nhân #${item.user_id}`),
+                
+                image_url: item.image_url,
+                result: item.ai_result || "Đang xử lý...", 
+                status: item.ai_analysis_status || "PENDING"
+            }));
+            
+            setAiHistory(mappedHistory);
         }
-    };
+    } catch (error) { console.error("Lỗi tải lịch sử AI:", error); }
+}, []);
 
-    // --- OTHER HANDLERS (SEARCH, ADD, ASSIGN) ---
+    // --- INITIAL LOAD & POLLING ---
+    useEffect(() => {
+        fetchDashboardData();
+        fetchAiHistory();
+    }, [fetchDashboardData, fetchAiHistory]);
+
+    // Tự động refresh dữ liệu mỗi 5s
+    useEffect(() => {
+        const interval = setInterval(() => {
+            if (activeMenu === 'ai') fetchAiHistory();
+            if (activeMenu === 'accounts' || activeMenu === 'stats') fetchDashboardData();
+        }, 5000);
+        return () => clearInterval(interval);
+    }, [activeMenu, fetchAiHistory, fetchDashboardData]);
+
+    // Click outside to close menu
+    useEffect(() => {
+        const handleClickOutside = (event: MouseEvent) => {
+            if (userMenuRef.current && !userMenuRef.current.contains(event.target as Node)) {
+                setShowUserMenu(false);
+            }
+        };
+        document.addEventListener('mousedown', handleClickOutside);
+        return () => document.removeEventListener('mousedown', handleClickOutside);
+    }, []);
+
+// --- HANDLERS: SEARCH & ADD DOCTOR/PATIENT ---
     const searchDoctors = async (query: string) => {
         const token = localStorage.getItem('token');
         try {
-            const res = await fetch(`http://127.0.0.1:8000/api/doctors/available?query=${query}`, {
+            const res = await fetch(`http://localhost:8000/api/v1/clinics/doctors/available?query=${query}`, {
                 headers: { 'Authorization': `Bearer ${token}` }
             });
-            if (res.ok) { const data = await res.json(); setAvailableDoctors(data.doctors); }
+            if (res.ok) { 
+                const data = await res.json(); 
+                const foundDoctors = data.doctors || [];
+
+                // --- SỬA ĐỔI Ở ĐÂY: Lọc bỏ những bác sĩ đã có trong danh sách ---
+                // Chỉ giữ lại bác sĩ nào KHÔNG có id trùng với danh sách doctors hiện tại
+                const filteredDoctors = foundDoctors.filter((d: any) => 
+                    !doctors.some(existingDoc => existingDoc.id === d.id)
+                );
+                
+                setAvailableDoctors(filteredDoctors); 
+            }
         } catch (error) { console.error(error); }
     };
 
     useEffect(() => { if (showAddDoctorModal) { setSearchDocTerm(''); searchDoctors(''); } }, [showAddDoctorModal]);
 
-    const handleAddExistingDoctor = async (doctorId: string) => {
-        if(!window.confirm("Thêm bác sĩ này?")) return;
+const handleAddExistingDoctor = async (doctorId: string) => {
         const token = localStorage.getItem('token');
-        await fetch('http://127.0.0.1:8000/api/clinic/add-existing-doctor', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-            body: JSON.stringify({ doctor_id: doctorId })
-        });
-        setShowAddDoctorModal(false); fetchDashboardData();
+        try {
+            const res = await fetch('http://localhost:8000/api/v1/clinics/add-user', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify({ user_id: doctorId }) // Gửi ID lên server
+            });
+
+            if (res.ok) {
+                setAvailableDoctors(prev => prev.filter(d => d.id !== doctorId));
+                fetchDashboardData(); 
+                // 2. Tải lại danh sách tìm kiếm để cập nhật trạng thái nút bấm
+                searchDoctors(searchDocTerm);
+            } else {
+                alert("Lỗi khi thêm bác sĩ");
+            }
+        } catch (error) {
+            console.error(error);
+        }
     };
 
     const searchPatients = async (query: string) => {
-        const token = localStorage.getItem('token');
-        try {
-            const res = await fetch(`http://127.0.0.1:8000/api/patients/available?query=${query}`, {
-                headers: { 'Authorization': `Bearer ${token}` }
-            });
-            if (res.ok) { const data = await res.json(); setAvailablePatients(data.patients); }
-        } catch (error) { console.error(error); }
-    };
+            const token = localStorage.getItem('token');
+            try {
+                const res = await fetch(`http://localhost:8000/api/v1/clinics/patients/available?query=${query}`, {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                if (res.ok) { 
+                    const data = await res.json(); 
+                    const foundPatients = data.patients || [];
+
+                    // --- SỬA ĐỔI Ở ĐÂY: Lọc bỏ những bệnh nhân đã có trong danh sách ---
+                    const filteredPatients = foundPatients.filter((p: any) => 
+                        !patients.some(existingPatient => existingPatient.id === p.id)
+                    );
+
+                    setAvailablePatients(filteredPatients); 
+                }
+            } catch (error) { console.error(error); }
+        };
 
     useEffect(() => { if (showAddPatientModal) { setSearchPatientTerm(''); searchPatients(''); } }, [showAddPatientModal]);
 
     const handleAddExistingPatient = async (patientId: string) => {
-        if(!window.confirm("Thêm bệnh nhân này?")) return;
-        const token = localStorage.getItem('token');
-        await fetch('http://127.0.0.1:8000/api/clinic/add-existing-patient', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-            body: JSON.stringify({ patient_id: patientId })
-        });
-        setShowAddPatientModal(false); fetchDashboardData();
-    };
+            const token = localStorage.getItem('token');
+            try {
+                const res = await fetch('http://localhost:8000/api/v1/clinics/add-user', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify({ user_id: patientId })
+                });
+
+                if (res.ok) {
+                    setAvailablePatients(prev => prev.filter(p => p.id !== patientId));
+                    fetchDashboardData(); // Refresh dashboard
+                    searchPatients(searchPatientTerm); // Refresh modal list
+                }
+            } catch (error) {
+                console.error(error);
+            }
+        };
 
     const submitAssignment = async () => {
         if (!selectedPatient || !targetDoctorId) return;
         const token = localStorage.getItem('token');
-        await fetch('http://127.0.0.1:8000/api/clinic/assign-patient', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-            body: JSON.stringify({ patient_id: selectedPatient.id, doctor_id: targetDoctorId })
-        });
-        setShowAssignModal(false); fetchDashboardData();
-    };
-
-    // [HÀM MỚI] Lấy lịch sử AI khi chuyển tab
-    const fetchAiHistory = async () => {
-        const token = localStorage.getItem('token');
         try {
-            const res = await fetch('http://127.0.0.1:8000/api/clinic/ai-history', {
-                headers: { 'Authorization': `Bearer ${token}` }
+            const res = await fetch('http://localhost:8000/api/v1/clinics/assign-patient', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                body: JSON.stringify({ patient_id: selectedPatient.id, doctor_id: targetDoctorId })
             });
             if (res.ok) {
-                const data = await res.json();
-                setAiHistory(data.history);
-            }
-        } catch (error) { console.error(error); }
+                setShowAssignModal(false); 
+                fetchDashboardData();
+                alert("Đã phân công thành công!");
+            } else alert("Lỗi phân công.");
+        } catch(e) { alert("Lỗi kết nối."); }
     };
 
-    // Gọi API khi chuyển sang tab 'ai'
-    useEffect(() => {
-        if (activeMenu === 'ai') {
-            fetchAiHistory();
-        }
-    }, [activeMenu]);
-
     const exportToCSV = () => {
-        const headers = ["ID,Họ Tên,Email,SĐT,Bác sĩ phụ trách,Kết quả AI"];
-        const rows = patients.map(p => `"${p.id}","${p.full_name}","${p.email || ''}","${p.phone}","${p.assigned_doctor}","${p.last_result}"`);
+        const headers = ["ID,Họ Tên,Email,SĐT,Bác sĩ phụ trách,Kết quả AI,Ngày khám gần nhất"];
+        const rows = patients.map(p => `"${p.id}","${p.full_name}","${p.email || ''}","${p.phone}","${p.assigned_doctor || 'Chưa có'}","${p.latest_scan?.ai_result || 'Chưa khám'}","${p.latest_scan?.upload_date || ''}"`);
         const csvContent = "data:text/csv;charset=utf-8," + [headers, ...rows].join("\n");
         const link = document.createElement("a");
         link.href = encodeURI(csvContent);
-        link.download = `AURA_ThongKe_${new Date().toISOString().split('T')[0]}.csv`;
+        link.download = `AURA_Clinic_Report_${new Date().toISOString().split('T')[0]}.csv`;
         link.click();
     };
 
     const handleLogout = () => { localStorage.clear(); navigate('/login', { replace: true }); };
-    const warningPatients = patients.filter(p => p.last_result.toLowerCase().match(/nặng|severe|cao/));
 
+    // Helper: Màu trạng thái
+    const getStatusColor = (result: string) => {
+        if (!result) return 'black';
+        const r = result.toLowerCase();
+        if (r.includes('nặng') || r.includes('severe') || r.includes('pdr')) return '#dc3545'; // Đỏ
+        if (r.includes('vừa') || r.includes('moderate')) return '#fd7e14'; // Cam
+        if (r.includes('bình thường') || r.includes('normal') || r.includes('không')) return '#28a745'; // Xanh
+        return '#007bff'; // Xanh dương (khác)
+    };
 
+    // Filter Warning Patients
+    const warningPatients = patients.filter(p => {
+        const res = (p.latest_scan?.ai_result || "").toLowerCase();
+        return res.includes('nặng') || res.includes('severe') || res.includes('pdr') || res.includes('moderate');
+    });
 
-    if (loading) return <div style={styles.loading}>Đang tải dữ liệu...</div>;
+    if (loading) return <div style={styles.loading}><FaSpinner className="spin" size={30} /> &nbsp; Đang tải dữ liệu phòng khám...</div>;
 
     return (
         <div style={styles.container}>
@@ -261,7 +312,8 @@ const ClinicDashboard: React.FC = () => {
             <aside style={styles.sidebar}>
                 <div style={styles.sidebarHeader}>
                     <div style={styles.logoRow}>
-                        <img src="/logo.svg" alt="Logo" style={{width:'30px'}} />
+                        {/* <img src="/logo.svg" alt="Logo" style={{width:'30px'}} /> */}
+                        <FaUserMd size={24} color="#007bff"/>
                         <span style={styles.logoText}>AURA CLINIC</span>
                     </div>
                     <div style={styles.clinicName}>{clinicName}</div>
@@ -278,6 +330,7 @@ const ClinicDashboard: React.FC = () => {
                     </div>
                     <div style={activeMenu === 'stats' ? styles.menuItemActive : styles.menuItem} onClick={() => setActiveMenu('stats')}>
                         <FaChartLine style={styles.menuIcon} /> Thống kê & Cảnh báo
+                        {warningPatients.length > 0 && <span style={styles.badgeWarn}>{warningPatients.length}</span>}
                     </div>
                 </nav>
                 <div style={styles.sidebarFooter}>
@@ -288,17 +341,25 @@ const ClinicDashboard: React.FC = () => {
             {/* MAIN */}
             <main style={styles.main}>
                 <header style={styles.header}>
-                    <div style={styles.searchBox}><FaSearch color="#999" /><input type="text" placeholder="Tìm kiếm..." style={styles.searchInput} /></div>
+                    <div style={styles.searchBox}><FaSearch color="#999" /><input type="text" placeholder="Tìm kiếm hồ sơ..." style={styles.searchInput} /></div>
                     <div style={styles.headerRight}>
-                        <div style={styles.profileBox} onClick={() => setShowUserMenu(!showUserMenu)}>
-                            <div style={styles.avatarCircle}>O</div><span style={styles.userNameText}>Clinic Owner</span>
+                        <div style={{position:'relative'}} ref={userMenuRef}>
+                            <div style={styles.profileBox} onClick={() => setShowUserMenu(!showUserMenu)}>
+                                <div style={styles.avatarCircle}>C</div>
+                                <span style={styles.userNameText}>{adminName}</span>
+                            </div>
+                            {showUserMenu && (
+                                <div style={styles.dropdownMenu}>
+                                    <button style={styles.dropdownItem} onClick={handleLogout}><FaSignOutAlt style={{marginRight:8}}/> Đăng xuất</button>
+                                </div>
+                            )}
                         </div>
                     </div>
                 </header>
 
                 <div style={styles.contentBody}>
                     
-                    {/* --- TAB 1: ACCOUNTS --- */}
+                    {/* --- TAB 1: ACCOUNTS (QUẢN LÝ) --- */}
                     {activeMenu === 'accounts' && (
                         <div style={{display: 'flex', flexDirection: 'column', gap: '30px'}}>
                             {/* Bảng Bác sĩ */}
@@ -310,13 +371,12 @@ const ClinicDashboard: React.FC = () => {
                                 <table style={styles.table}>
                                     <thead><tr><th style={styles.th}>BÁC SĨ</th><th style={styles.th}>LIÊN HỆ</th><th style={styles.th}>TRẠNG THÁI</th><th style={styles.th}>SỐ BỆNH NHÂN</th></tr></thead>
                                     <tbody>
-                                        {doctors
-                                            .map(d => (
+                                        {doctors.length === 0 ? <tr><td colSpan={4} style={styles.emptyCell}>Chưa có bác sĩ nào.</td></tr> : doctors.map(d => (
                                             <tr key={d.id} style={styles.tr}>
-                                                <td style={styles.td}><b>{d.full_name}</b><br/><small style={{color:'#888'}}>@{d.userName}</small></td>
+                                                <td style={styles.td}><b>{d.full_name}</b><br/><small style={{color:'#888'}}>@{d.username}</small></td>
                                                 <td style={styles.td}>{d.email}<br/>{d.phone}</td>
                                                 <td style={styles.td}><span style={styles.statusActive}>Hoạt động</span></td>
-                                                <td style={styles.td}><span style={styles.badge}>{d.patient_count} bệnh nhân</span></td>
+                                                <td style={styles.td}><span style={styles.badge}>{d.patient_count} BN</span></td>
                                             </tr>
                                         ))}
                                     </tbody>
@@ -329,14 +389,20 @@ const ClinicDashboard: React.FC = () => {
                                     <button onClick={() => setShowAddPatientModal(true)} style={styles.primaryBtnSm}><FaUserPlus style={{marginRight:5}}/> Thêm Bệnh nhân</button>
                                 </div>
                                 <table style={styles.table}>
-                                    <thead><tr><th style={styles.th}>BỆNH NHÂN</th><th style={styles.th}>THÔNG TIN</th><th style={styles.th}>BÁC SĨ PHỤ TRÁCH</th><th style={styles.th}>KẾT QUẢ AI</th><th style={styles.th}>HÀNH ĐỘNG</th></tr></thead>
+                                    <thead><tr><th style={styles.th}>BỆNH NHÂN</th><th style={styles.th}>LIÊN HỆ</th><th style={styles.th}>BÁC SĨ PHỤ TRÁCH</th><th style={styles.th}>KẾT QUẢ AI GẦN NHẤT</th><th style={styles.th}>HÀNH ĐỘNG</th></tr></thead>
                                     <tbody>
-                                        {patients.map(p => (
+                                        {patients.length === 0 ? <tr><td colSpan={5} style={styles.emptyCell}>Chưa có bệnh nhân nào.</td></tr> : patients.map(p => (
                                             <tr key={p.id} style={styles.tr}>
-                                                <td style={styles.td}><b>{p.full_name}</b></td>
+                                                <td style={styles.td}><b>{p.full_name}</b><br/><small style={{color:'#888'}}>@{p.username}</small></td>
                                                 <td style={styles.td}>{p.email}<br/><small>{p.phone}</small></td>
                                                 <td style={styles.td}>{p.assigned_doctor_id ? <span style={styles.doctorTagActive}><FaStethoscope style={{marginRight:5}}/> {p.assigned_doctor}</span> : <span style={styles.doctorTagWarning}>Chưa phân công</span>}</td>
-                                                <td style={styles.td}>{p.last_result}</td>
+                                                <td style={styles.td}>
+                                                    {p.latest_scan ? (
+                                                        <span style={{fontWeight:'bold', color: getStatusColor(p.latest_scan.ai_result)}}>
+                                                            {p.latest_scan.ai_result}
+                                                        </span>
+                                                    ) : <span style={{color:'#999'}}>--</span>}
+                                                </td>
                                                 <td style={styles.td}><button onClick={() => {setSelectedPatient(p); setTargetDoctorId(p.assigned_doctor_id||''); setShowAssignModal(true)}} style={styles.actionBtn}>Phân công</button></td>
                                             </tr>
                                         ))}
@@ -346,7 +412,7 @@ const ClinicDashboard: React.FC = () => {
                         </div>
                     )}
 
-{/* --- [TAB 2: PHÂN TÍCH AI - GIAO DIỆN MỚI] --- */}
+                    {/* --- TAB 2: PHÂN TÍCH AI --- */}
                     {activeMenu === 'ai' && (
                         <div style={styles.card}>
                             <div style={styles.cardHeader}>
@@ -354,13 +420,10 @@ const ClinicDashboard: React.FC = () => {
                                     <h2 style={styles.pageTitle}><FaHistory style={{marginRight: 10}}/>Lịch sử Phân tích AI</h2>
                                     <span style={styles.badge}>{aiHistory.length} Ca khám</span>
                                 </div>
-                                
-                                {/* NÚT PHÂN TÍCH NGAY -> DẪN SANG TRANG UPLOAD */}
                                 <button 
                                     onClick={() => navigate('/upload')} 
-                                    style={{...styles.primaryBtn, display:'flex', alignItems:'center', gap:'8px'}}
-                                >
-                                    <FaRobot /> Phân tích ngay <FaArrowRight style={{fontSize:'12px'}}/>
+                                    style={{...styles.primaryBtn, display:'flex', alignItems:'center', gap:'8px'}}>
+                                    <FaCamera /> Phân tích
                                 </button>
                             </div>
 
@@ -372,37 +435,31 @@ const ClinicDashboard: React.FC = () => {
                                         <th style={styles.th}>Hình ảnh</th>
                                         <th style={styles.th}>Kết quả AI</th>
                                         <th style={styles.th}>Trạng thái</th>
+                                        <th style={styles.th}>Chi tiết</th>
                                     </tr>
                                 </thead>
                                 <tbody>
                                     {aiHistory.length === 0 ? (
-                                        <tr><td colSpan={5} style={styles.emptyCell}>Chưa có dữ liệu phân tích nào.</td></tr>
+                                        <tr><td colSpan={6} style={styles.emptyCell}>Chưa có dữ liệu phân tích nào.</td></tr>
                                     ) : (
                                         aiHistory.map((item) => (
                                             <tr key={item.id} style={styles.tr}>
-                                                <td style={styles.td}>{item.date}</td>
+                                                <td style={styles.td}>{item.date}<br/><small style={{color:'#999'}}>{item.time}</small></td>
                                                 <td style={styles.td}><b>{item.patient_name}</b></td>
                                                 <td style={styles.td}>
-                                                    <img 
-                                                        src={item.image_url} 
-                                                        alt="Eye" 
-                                                        style={{width:'50px', height:'50px', objectFit:'cover', borderRadius:'6px', border:'1px solid #eee'}} 
-                                                    />
+                                                    <img src={item.image_url} alt="Scan" style={{width:'40px', height:'40px', objectFit:'cover', borderRadius:'4px', border:'1px solid #ddd'}} />
                                                 </td>
                                                 <td style={styles.td}>
-                                                    <span style={{
-                                                        color: item.result.includes("Normal") ? 'green' : 
-                                                               item.result.includes("Severe") ? 'red' : 'orange',
-                                                        fontWeight: 'bold'
-                                                    }}>
-                                                        {item.result}
-                                                    </span>
+                                                    <span style={{color: getStatusColor(item.result), fontWeight: 'bold'}}>{item.result}</span>
                                                 </td>
                                                 <td style={styles.td}>
                                                     {item.status === 'COMPLETED' 
-                                                        ? <span style={{background:'#d4edda', color:'green', padding:'4px 8px', borderRadius:'4px', fontSize:'11px', fontWeight:'bold'}}>Hoàn tất</span>
-                                                        : <span style={{background:'#fff3cd', color:'orange', padding:'4px 8px', borderRadius:'4px', fontSize:'11px', fontWeight:'bold'}}>Đang xử lý</span>
+                                                        ? <span style={styles.statusActive}>Hoàn tất</span>
+                                                        : <span style={styles.statusPending}><FaSpinner className="spin"/> Đang xử lý</span>
                                                     }
+                                                </td>
+                                                <td style={styles.td}>
+                                                    <button onClick={() => navigate(`/analysis-result/${item.id}`)} style={styles.actionBtn}>Xem</button>
                                                 </td>
                                             </tr>
                                         ))
@@ -429,8 +486,8 @@ const ClinicDashboard: React.FC = () => {
                                             <td style={styles.td}><span style={{color: '#007bff', fontWeight: 'bold'}}>{s.price}</span></td>
                                             <td style={styles.td}>
                                                 <div style={{display:'flex', gap:'10px'}}>
-                                                    <button style={{border:'none', background:'transparent', color:'#555'}}><FaEdit/></button>
-                                                    <button style={{border:'none', background:'transparent', color:'red'}}><FaTrash/></button>
+                                                    <button style={{border:'none', background:'transparent', color:'#555', cursor:'pointer'}}><FaEdit/></button>
+                                                    <button style={{border:'none', background:'transparent', color:'red', cursor:'pointer'}}><FaTrash/></button>
                                                 </div>
                                             </td>
                                         </tr>
@@ -455,7 +512,7 @@ const ClinicDashboard: React.FC = () => {
                                             <tr key={p.id} style={styles.tr}>
                                                 <td style={styles.td}><b style={{color:'#dc3545'}}>{p.full_name}</b></td>
                                                 <td style={styles.td}>{p.phone}</td>
-                                                <td style={styles.td}>{p.last_result}</td>
+                                                <td style={styles.td}>{p.latest_scan?.ai_result}</td>
                                                 <td style={styles.td}><button style={{...styles.primaryBtnSm, background:'#dc3545'}}>Liên hệ gấp</button></td>
                                             </tr>
                                         ))}
@@ -465,7 +522,7 @@ const ClinicDashboard: React.FC = () => {
                             <div style={styles.card}>
                                 <div style={styles.cardHeader}><h2 style={styles.pageTitle}><FaFileExport style={{marginRight: 10}}/>Xuất Báo cáo</h2></div>
                                 <div style={{padding: '25px'}}>
-                                    <p style={{color: '#555', marginBottom: '20px'}}>Tải xuống danh sách bệnh nhân và kết quả chẩn đoán.</p>
+                                    <p style={{color: '#555', marginBottom: '20px'}}>Tải xuống danh sách bệnh nhân và kết quả chẩn đoán dưới dạng file Excel/CSV.</p>
                                     <button onClick={exportToCSV} style={{...styles.primaryBtn, display:'flex', alignItems:'center', gap:'10px'}}><FaFileExport/> Tải xuống (.CSV)</button>
                                 </div>
                             </div>
@@ -474,8 +531,7 @@ const ClinicDashboard: React.FC = () => {
                 </div>
             </main>
 
-            {/* --- MODALS --- */}
-            {/* Modal Phân công (Giữ nguyên logic) */}
+            {/* --- MODAL: ASSIGN DOCTOR --- */}
             {showAssignModal && selectedPatient && (
                 <div style={styles.modalOverlay}>
                     <div style={styles.modalContent}>
@@ -489,13 +545,13 @@ const ClinicDashboard: React.FC = () => {
                     </div>
                 </div>
             )}
-            
-            {/* Modal Tìm Bác sĩ & Bệnh nhân (Giữ nguyên code bảng tìm kiếm đã làm trước đó) */}
+        
+            {/* --- MODAL: ADD PATIENT --- */}
             {showAddPatientModal && (
                 <div style={styles.modalOverlay}>
                     <div style={{...styles.modalContent, width: '600px'}}> 
-                        <div style={{display:'flex', justifyContent:'space-between', marginBottom:'15px'}}><h3>Thêm Bệnh nhân</h3><button onClick={()=>setShowAddPatientModal(false)} style={{border:'none',background:'none',fontSize:'18px'}}>✖</button></div>
-                        <input type="text" placeholder="Tìm kiếm..." style={styles.selectInput} value={searchPatientTerm} onChange={(e)=>{setSearchPatientTerm(e.target.value); searchPatients(e.target.value)}}/>
+                        <div style={{display:'flex', justifyContent:'space-between', marginBottom:'15px'}}><h3>Thêm Bệnh nhân</h3><button onClick={()=>setShowAddPatientModal(false)} style={styles.closeBtn}><FaTimes/></button></div>
+                        <input type="text" placeholder="Nhập tên, email hoặc SĐT..." style={styles.selectInput} value={searchPatientTerm} onChange={(e)=>{setSearchPatientTerm(e.target.value); searchPatients(e.target.value)}}/>
                         <div style={{maxHeight:'300px', overflowY:'auto'}}>
                             <table style={styles.table}>
                                 <tbody>{availablePatients.map(p=>(<tr key={p.id}><td style={{padding:'10px'}}>{p.full_name}<br/><small>{p.email}</small></td><td><button onClick={()=>handleAddExistingPatient(p.id)} style={styles.primaryBtnSm}>Thêm</button></td></tr>))}</tbody>
@@ -504,11 +560,13 @@ const ClinicDashboard: React.FC = () => {
                     </div>
                 </div>
             )}
-             {showAddDoctorModal && (
+
+            {/* --- MODAL: ADD DOCTOR --- */}
+            {showAddDoctorModal && (
                 <div style={styles.modalOverlay}>
                     <div style={{...styles.modalContent, width: '600px'}}> 
-                        <div style={{display:'flex', justifyContent:'space-between', marginBottom:'15px'}}><h3>Thêm Bác sĩ</h3><button onClick={()=>setShowAddDoctorModal(false)} style={{border:'none',background:'none',fontSize:'18px'}}>✖</button></div>
-                        <input type="text" placeholder="Tìm kiếm..." style={styles.selectInput} value={searchDocTerm} onChange={(e)=>{setSearchDocTerm(e.target.value); searchDoctors(e.target.value)}}/>
+                        <div style={{display:'flex', justifyContent:'space-between', marginBottom:'15px'}}><h3>Thêm Bác sĩ</h3><button onClick={()=>setShowAddDoctorModal(false)} style={styles.closeBtn}><FaTimes/></button></div>
+                        <input type="text" placeholder="Tìm kiếm bác sĩ..." style={styles.selectInput} value={searchDocTerm} onChange={(e)=>{setSearchDocTerm(e.target.value); searchDoctors(e.target.value)}}/>
                         <div style={{maxHeight:'300px', overflowY:'auto'}}>
                             <table style={styles.table}>
                                 <tbody>{availableDoctors.map(d=>(<tr key={d.id}><td style={{padding:'10px'}}>{d.full_name}<br/><small>{d.email}</small></td><td><button onClick={()=>handleAddExistingDoctor(d.id)} style={styles.primaryBtnSm}>Thêm</button></td></tr>))}</tbody>
@@ -523,16 +581,16 @@ const ClinicDashboard: React.FC = () => {
 
 // --- STYLES ---
 const styles: {[key:string]: React.CSSProperties} = {
-    loading: { display:'flex', justifyContent:'center', alignItems:'center', height:'100vh', color:'#555' },
+    loading: { display:'flex', justifyContent:'center', alignItems:'center', height:'100vh', color:'#555', flexDirection:'column' },
     container: { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, display: 'flex', backgroundColor: '#f4f6f9', fontFamily: '"Segoe UI", sans-serif', overflow: 'hidden', zIndex: 1000 },
     sidebar: { width: '260px', backgroundColor: '#fff', borderRight: '1px solid #e1e4e8', display: 'flex', flexDirection: 'column', height: '100%' },
     sidebarHeader: { padding: '25px 20px', borderBottom: '1px solid #f0f0f0' },
     logoRow: { display:'flex', alignItems:'center', gap:'10px', marginBottom:'5px' },
     logoText: { fontWeight: '800', fontSize: '18px', color: '#1e293b' },
-    clinicName: { fontSize:'13px', color:'#666', marginLeft:'40px' },
+    clinicName: { fontSize:'13px', color:'#666', marginLeft:'35px' },
     nav: { flex: 1, padding: '20px 0', overflowY: 'auto' },
-    menuItem: { padding: '12px 25px', cursor: 'pointer', fontSize: '14px', color: '#555', display:'flex', alignItems:'center' },
-    menuItemActive: { padding: '12px 25px', cursor: 'pointer', fontSize: '14px', fontWeight: '600', backgroundColor: '#eef2ff', color: '#007bff', borderRight: '3px solid #007bff', display:'flex', alignItems:'center' },
+    menuItem: { padding: '12px 25px', cursor: 'pointer', fontSize: '14px', color: '#555', display:'flex', alignItems:'center', position:'relative' },
+    menuItemActive: { padding: '12px 25px', cursor: 'pointer', fontSize: '14px', fontWeight: '600', backgroundColor: '#eef2ff', color: '#007bff', borderRight: '3px solid #007bff', display:'flex', alignItems:'center', position:'relative' },
     menuIcon: { marginRight: '12px' },
     sidebarFooter: { padding: '20px', borderTop: '1px solid #f0f0f0' },
     logoutBtn: { width: '100%', padding: '10px', background: '#fff0f0', color: '#d32f2f', border: 'none', borderRadius: '6px', cursor: 'pointer', display:'flex', alignItems:'center', justifyContent:'center' },
@@ -542,19 +600,23 @@ const styles: {[key:string]: React.CSSProperties} = {
     searchInput: { border: 'none', background: 'transparent', outline: 'none', marginLeft: '10px', width: '100%' },
     headerRight: { display: 'flex', alignItems: 'center', gap: '20px' },
     profileBox: { display:'flex', alignItems:'center', gap:'10px', cursor:'pointer' },
-    avatarCircle: { width: '32px', height: '32px', borderRadius: '50%', backgroundColor: '#007bff', color: 'white', display: 'flex', justifyContent: 'center', alignItems: 'center', fontSize: '12px' },
+    avatarCircle: { width: '32px', height: '32px', borderRadius: '50%', backgroundColor: '#007bff', color: 'white', display: 'flex', justifyContent: 'center', alignItems: 'center', fontSize: '14px', fontWeight:'bold' },
     userNameText: { fontSize:'14px', fontWeight:'600' },
+    dropdownMenu: { position: 'absolute', top: '50px', right: '0', width: '180px', backgroundColor: 'white', borderRadius: '8px', boxShadow: '0 4px 15px rgba(0,0,0,0.1)', zIndex: 1000, border: '1px solid #eee' },
+    dropdownItem: { display: 'flex', alignItems:'center', width: '100%', padding: '10px 15px', textAlign: 'left', background: 'none', border: 'none', cursor: 'pointer', color: '#dc3545', fontSize:'14px' },
     contentBody: { padding: '30px', flex: 1, overflowY: 'auto' },
     card: { backgroundColor: 'white', borderRadius: '12px', boxShadow: '0 2px 10px rgba(0,0,0,0.03)', border:'1px solid #eaeaea', overflow:'hidden', marginBottom:'20px' },
     cardHeader: { padding:'20px 25px', borderBottom:'1px solid #f0f0f0', display:'flex', justifyContent:'space-between', alignItems:'center' },
     pageTitle: { fontSize: '16px', margin: 0, display:'flex', alignItems:'center', color: '#333' },
     badge: { background:'#eef2ff', color:'#007bff', padding:'4px 10px', borderRadius:'20px', fontSize:'11px', fontWeight:'600' },
+    badgeWarn: { background:'#dc3545', color:'white', padding:'2px 8px', borderRadius:'10px', fontSize:'10px', fontWeight:'bold', marginLeft:'auto' },
     table: { width: '100%', borderCollapse: 'collapse', fontSize: '14px' },
     th: { textAlign: 'left', padding: '12px 25px', borderBottom: '1px solid #eee', color: '#8898aa', fontSize:'11px', textTransform:'uppercase', fontWeight:'700', background:'#fbfbfb' },
     tr: { borderBottom: '1px solid #f5f5f5' },
     td: { padding: '15px 25px', verticalAlign: 'middle', color:'#333' },
     emptyCell: { textAlign: 'center', padding: '30px', color: '#999', fontStyle: 'italic' },
     statusActive: { background: '#d4edda', color: '#155724', padding: '4px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: 'bold' },
+    statusPending: { background: '#fff3cd', color: '#856404', padding: '4px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: 'bold', display:'flex', alignItems:'center', gap:'5px', width:'fit-content' },
     doctorTagActive: { background: '#e3f2fd', color: '#0d47a1', padding: '5px 10px', borderRadius: '6px', fontSize: '12px', display:'inline-flex', alignItems:'center' },
     doctorTagWarning: { background: '#fff3cd', color: '#856404', padding: '5px 10px', borderRadius: '6px', fontSize: '12px' },
     primaryBtnSm: { background: '#007bff', color: 'white', border: 'none', padding: '8px 15px', borderRadius: '6px', cursor: 'pointer', fontSize: '13px', display:'flex', alignItems:'center' },
@@ -564,8 +626,20 @@ const styles: {[key:string]: React.CSSProperties} = {
     modalOverlay: { position:'fixed', top:0, left:0, width:'100%', height:'100%', background:'rgba(0,0,0,0.5)', display:'flex', justifyContent:'center', alignItems:'center', zIndex: 2000 },
     modalContent: { background:'white', padding:'25px', borderRadius:'12px', width:'420px', boxShadow: '0 10px 30px rgba(0,0,0,0.2)' },
     formLabel: { display:'block', marginBottom:'8px', fontSize:'14px', fontWeight:'600' },
-    selectInput: { width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid #ddd', outline: 'none', fontSize: '14px', background:'#f9f9f9', marginBottom:'20px' },
+    selectInput: { width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid #ddd', outline: 'none', fontSize: '14px', background:'#f9f9f9', marginBottom:'20px', boxSizing: 'border-box' },
     modalActions: { display: 'flex', justifyContent: 'flex-end', gap: '10px' },
+    closeBtn: { border:'none', background:'transparent', fontSize:'18px', cursor:'pointer', color:'#666' },
+    uploadBox: { border: '2px dashed #ccd0d5', borderRadius: '8px', height: '180px', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: '#f8f9fa', position: 'relative' },
+    uploadLabel: { display: 'flex', flexDirection: 'column', alignItems: 'center', cursor: 'pointer', width: '100%', height: '100%', justifyContent: 'center' },
+    removeImgBtn: { position: 'absolute', top: 5, right: 5, background: 'rgba(255,255,255,0.8)', border: 'none', borderRadius: '50%', width: '25px', height: '25px', cursor: 'pointer', color: 'red' },
 };
+
+// CSS Animation for Spinner
+const styleSheet = document.createElement("style");
+styleSheet.innerText = `
+@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+.spin { animation: spin 1s linear infinite; }
+`;
+document.head.appendChild(styleSheet);
 
 export default ClinicDashboard;

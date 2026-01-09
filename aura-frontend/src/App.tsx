@@ -80,7 +80,7 @@ const App: React.FC = () => {
                     <Route path="/dashboarddr" element={<ProtectedRoute element={<DashboardDr />} />} />
                     <Route path="/profile-dr" element={<ProtectedRoute element={<ProfileDr />} />} />
                     <Route path="/upload" element={<ProtectedRoute element={<Upload />} />} />
-                    <Route path="/result/:id" element={<ProtectedRoute element={<Analysis />} />} />
+                    <Route path="/analysis-result/:id" element={<ProtectedRoute element={<Analysis />} />} />
                     <Route path="/set-username" element={<ProtectedRoute element={<SetUsername />} />} />
                     <Route path="/profile" element={<ProtectedRoute element={<ProfilePage />} />} />
                     <Route path="/reset-password" element={<ResetPassword />} />

@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { 
     FaPaperPlane, FaUserMd, FaUsers, FaClipboardList, FaCommentDots, 
     FaSearch, FaTimes, FaSignOutAlt, FaBell, FaChartBar, FaStethoscope,
-    FaFileAlt, FaDownload, FaEdit, FaCheckCircle, FaExclamationTriangle 
+    FaFileAlt, FaEdit, FaCheckCircle, FaExclamationTriangle 
 } from 'react-icons/fa';
 
 // --- Dashboard Component (Bác sĩ) ---
@@ -11,7 +11,7 @@ const DashboardDr: React.FC = () => {
     const navigate = useNavigate();
 
     // --- STATE DỮ LIỆU ---
-    const [userRole, setUserRole] = useState<string>('DOCTOR');
+    const [userRole, setUserRole] = useState<string>('doctor');
     const [userName, setUserName] = useState<string>('');   
     const [full_name, setFullName] = useState<string>(''); 
     const [isLoading, setIsLoading] = useState(true);
@@ -45,7 +45,7 @@ const DashboardDr: React.FC = () => {
     const profileRef = useRef<HTMLDivElement>(null);
 
     // --- STATE MỚI CHO TÍNH NĂNG BÁO CÁO [FR-19] ---
-const [showReportModal, setShowReportModal] = useState(false);
+    const [showReportModal, setShowReportModal] = useState(false);
     const [reportForm, setReportForm] = useState({
         patientId: '',
         aiResult: 'Nguy cơ cao', 
@@ -55,53 +55,51 @@ const [showReportModal, setShowReportModal] = useState(false);
     });
     const [submittedReports, setSubmittedReports] = useState<any[]>([]);
 
-    // 1. Hàm lấy danh sách báo cáo (Khớp với API /api/reports/me)
+    // 1. Hàm lấy danh sách báo cáo
     const fetchMyReports = useCallback(async () => {
         const token = localStorage.getItem('token');
         if (!token) return;
         try {
-            const res = await fetch('http://127.0.0.1:8000/api/reports/me', {
+            // SỬA: localhost
+            const res = await fetch('http://localhost:8000/api/v1/reports/me', {
                 headers: { 'Authorization': `Bearer ${token}` }
             });
             if (res.ok) {
                 const data = await res.json();
-                // API trả về: { reports: [{id, date, patient, type, status}, ...] }
-                // Dữ liệu đã được format sẵn từ Python, chỉ việc hiển thị
-                setSubmittedReports(data.reports); 
+                setSubmittedReports(data.reports || []); 
             }
         } catch (error) {
             console.error("Lỗi tải báo cáo:", error);
         }
     }, []);
 
-    // 2. Hàm gửi báo cáo (Khớp với Model ReportSubmitRequest trong Python)
+    // 2. Hàm gửi báo cáo
     const submitReport = async (e: React.FormEvent) => {
         e.preventDefault();
         const token = localStorage.getItem('token');
         if (!token) { alert("Vui lòng đăng nhập lại"); return; }
 
         try {
-            const res = await fetch('http://127.0.0.1:8000/api/reports', { 
+            const res = await fetch('http://localhost:8000/api/v1/reports', { 
                 method: 'POST', 
                 headers: { 
                     'Content-Type': 'application/json',
                     'Authorization': `Bearer ${token}`
                 },
-                // QUAN TRỌNG: Mapping đúng tên trường với main.py (snake_case)
                 body: JSON.stringify({
-                    patient_id: reportForm.patientId,          // Python: patient_id
-                    ai_result: reportForm.aiResult,            // Python: ai_result
-                    doctor_diagnosis: reportForm.doctorDiagnosis, // Python: doctor_diagnosis
-                    accuracy: reportForm.accuracy,             // Python: accuracy
-                    notes: reportForm.notes                    // Python: notes
+                    patient_id: reportForm.patientId,
+                    ai_result: reportForm.aiResult,
+                    doctor_diagnosis: reportForm.doctorDiagnosis,
+                    accuracy: reportForm.accuracy,
+                    notes: reportForm.notes
                 })
             });
 
             if (res.ok) {
                 alert("Đã gửi báo cáo thành công! Cảm ơn đóng góp của bạn.");
                 setShowReportModal(false);
-                setReportForm({ ...reportForm, doctorDiagnosis: '', notes: '' }); // Reset form
-                fetchMyReports(); // Tải lại danh sách
+                setReportForm({ ...reportForm, doctorDiagnosis: '', notes: '' });
+                fetchMyReports();
             } else {
                 const err = await res.json();
                 alert("Lỗi: " + (err.detail || "Không thể gửi báo cáo"));
@@ -111,7 +109,6 @@ const [showReportModal, setShowReportModal] = useState(false);
         }
     };
 
-    // Gọi fetch khi chuyển sang tab 'reports'
     useEffect(() => {
         if (activeTab === 'reports') {
             fetchMyReports();
@@ -119,16 +116,16 @@ const [showReportModal, setShowReportModal] = useState(false);
     }, [activeTab, fetchMyReports]);
 
     // --- FETCH & LOGIC ---
-    // (Giữ nguyên logic fetch chat, message, history như cũ, chỉ cập nhật UI)
-
+    
     const fetchChatData = useCallback(async (token: string) => {
         try {
-            const res = await fetch('http://127.0.0.1:8000/api/chats', {
+            const res = await fetch('http://localhost:8000/api/v1/chats', {
                 headers: { 'Authorization': `Bearer ${token}` }
             });
             if (res.ok) {
                 const data = await res.json();
-                const serverChats = data.chats;
+                const serverChats = data.chats || [];
+                
                 const enrichedChats = serverChats.map((sChat: any) => {
                     const patient = patientsData.find(p => p.id === sChat.id);
                     return {
@@ -154,6 +151,7 @@ const [showReportModal, setShowReportModal] = useState(false);
         } catch (error) { console.error("Lỗi chat:", error); }
     }, [patientsData]);
 
+    // Xem lịch sử hồ sơ bệnh nhân
     const handleViewHistory = async (patientId: string, name: string) => {
         setShowHistoryModal(true);
         setSelectedPatientName(name);
@@ -162,12 +160,20 @@ const [showReportModal, setShowReportModal] = useState(false);
         const token = localStorage.getItem('token');
         if (!token) return;
         try {
-            const res = await fetch(`http://127.0.0.1:8000/api/medical-records/patient/${patientId}`, {
+            // SỬA: Endpoint /api/records/patient/{id}
+            const res = await fetch(`http://localhost:8000/api/v1/records/patient/${patientId}`, {
                 headers: { 'Authorization': `Bearer ${token}` }
             });
             if (res.ok) {
                 const data = await res.json();
-                setHistoryRecords(data.records || []); 
+                // SỬA: Mapping dữ liệu mới
+                const records = (data.records || data || []).map((r: any) => ({
+                    id: r.id,
+                    date: new Date(r.upload_date).toLocaleDateString('vi-VN'),
+                    result: r.ai_result || "Đang phân tích...", // Map ai_result -> result để hiển thị
+                    status: r.ai_analysis_status
+                }));
+                setHistoryRecords(records); 
             }
         } catch (error) { console.error(error); } finally { setHistoryLoading(false); }
     };
@@ -176,11 +182,11 @@ const [showReportModal, setShowReportModal] = useState(false);
         const token = localStorage.getItem('token');
         if (!token) return null;
         try {
-            const res = await fetch(`http://127.0.0.1:8000/api/chat/history/${partnerId}`, {
+            const res = await fetch(`http://localhost:8000/api/v1/chat/history/${partnerId}`, {
                 headers: { 'Authorization': `Bearer ${token}` }
             });
             const data = await res.json();
-            return data.messages;
+            return data.messages || [];
         } catch (err) { return []; }
     };
 
@@ -191,7 +197,7 @@ const [showReportModal, setShowReportModal] = useState(false);
         const token = localStorage.getItem('token');
         if (token) {
             setChatData(prev => prev.map(c => c.id === partnerId ? { ...c, unread: false } : c));
-            await fetch(`http://127.0.0.1:8000/api/chat/read/${partnerId}`, { method: 'PUT', headers: { 'Authorization': `Bearer ${token}` }});
+            await fetch(`http://localhost:8000/api/v1/chat/read/${partnerId}`, { method: 'PUT', headers: { 'Authorization': `Bearer ${token}` }});
             fetchChatData(token);
         }
     };
@@ -215,7 +221,7 @@ const [showReportModal, setShowReportModal] = useState(false);
         });
         try {
             const token = localStorage.getItem('token');
-            await fetch('http://127.0.0.1:8000/api/chat/send', {
+            await fetch('http://localhost:8000/api/v1/chat/send', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
                 body: JSON.stringify({ receiver_id: selectedChatId, content: textToSend })
@@ -225,35 +231,50 @@ const [showReportModal, setShowReportModal] = useState(false);
 
     useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [currentMessages]);
 
+    // Polling
     useEffect(() => {
         const token = localStorage.getItem('token');
         if (!token) return;
         const interval = setInterval(async () => {
-             fetchChatData(token); 
+             // Chỉ gọi khi cần thiết
+             if (activeTab === 'chat') fetchChatData(token); 
              if (selectedChatId) {
                 const serverMsgs = await fetchMessageHistory(selectedChatId);
                 if (serverMsgs && serverMsgs.length >= currentMessages.length) setCurrentMessages(serverMsgs);
              }
         }, 3000); 
         return () => clearInterval(interval);
-    }, [selectedChatId, fetchChatData, currentMessages.length]);
+    }, [selectedChatId, fetchChatData, currentMessages.length, activeTab]);
 
+    // INIT DATA
     useEffect(() => {
         const token = localStorage.getItem('token');
         if (!token) { navigate('/login'); return; }
         const initData = async () => {
             try {
-                const userRes = await fetch('http://127.0.0.1:8000/api/users/me', { headers: { 'Authorization': `Bearer ${token}` } });
+                const userRes = await fetch('http://localhost:8000/api/v1/users/me', { headers: { 'Authorization': `Bearer ${token}` } });
                 if (!userRes.ok) throw new Error("Token lỗi");
+                
                 const userData = await userRes.json();
-                if (userData.user_info.role !== 'DOCTOR') { alert("Sai quyền truy cập"); handleLogout(); return; }
+                const info = userData.user_info || userData;
+                const userProfile = info.profile || userData.profile || {}
 
-                setUserName(userData.user_info.userName);
-                setFullName(userData.user_info.full_name || '');
-                setUserRole(userData.user_info.role);
+                if (info.role !== 'doctor') { 
+                    alert("Tài khoản không có quyền Bác sĩ"); 
+                    handleLogout(); 
+                    return; 
+                }
 
-                const patientsRes = await fetch('http://127.0.0.1:8000/api/doctor/my-patients', { headers: { 'Authorization': `Bearer ${token}` } });
-                if (patientsRes.ok) { const data = await patientsRes.json(); setPatientsData(data.patients); }
+                setUserName(info.username || info.userName);
+                setFullName(userProfile.full_name || info.full_name || '');
+                setUserRole(info.role);
+
+                // Fetch patients
+                const patientsRes = await fetch('http://localhost:8000/api/v1/doctor/my-patients', { headers: { 'Authorization': `Bearer ${token}` } });
+                if (patientsRes.ok) { 
+                    const data = await patientsRes.json(); 
+                    setPatientsData(data.patients || []); 
+                }
                 await fetchChatData(token); 
             } catch (error) { console.error(error); } finally { setIsLoading(false); }
         };
@@ -262,40 +283,56 @@ const [showReportModal, setShowReportModal] = useState(false);
 
     const handleLogout = () => { localStorage.clear(); navigate('/login', { replace: true }); };
 
-    // --- HELPER DATA ---
+    // --- HELPER DATA & LOGIC ---
     const unreadMessagesCount = chatData.filter(chat => chat.unread).length;
+    
+    // SỬA: Logic lọc hồ sơ cần xử lý (Pending) dựa trên trường ai_result mới
     const pendingRecords = patientsData
-        .filter(p => p.latest_scan?.ai_status === 'COMPLETED' && (p.latest_scan.result.includes('Nặng') || p.latest_scan.result.includes('Tăng sinh') || p.latest_scan.result.includes('Trung bình')))
-        .map(p => ({ id: p.latest_scan.record_id || '', patientName: p.full_name || p.userName, date: p.latest_scan.date, aiResult: p.latest_scan.result, status: 'Chờ Bác sĩ' }));
+        .filter(p => {
+            if (!p.latest_scan) return false;
+            const res = (p.latest_scan.ai_result || "").toLowerCase(); // SỬA: ai_result
+            const status = (p.latest_scan.ai_analysis_status || "").toUpperCase(); // SỬA: ai_analysis_status
+            
+            const isHighRisk = res.includes('nặng') || res.includes('severe') || res.includes('moderate') || res.includes('pdr');
+            const isCompleted = status === 'COMPLETED';
+            
+            return isCompleted && isHighRisk;
+        })
+        .map(p => ({ 
+            id: p.latest_scan.record_id || '', 
+            patientName: p.full_name || p.userName, 
+            date: new Date(p.latest_scan.upload_date).toLocaleDateString('vi-VN'), // SỬA: format date
+            aiResult: p.latest_scan.ai_result, // SỬA: ai_result
+            status: 'Chờ Bác sĩ' 
+        }));
+
     const totalPending = pendingRecords.length;
 
-    // --- TÍNH TOÁN DỮ LIỆU CHO BIỂU ĐỒ ---
+    // --- TÍNH TOÁN BIỂU ĐỒ ---
     const chartData = (() => {
         let severe = 0, moderate = 0, mild = 0, safe = 0;
         patientsData.forEach(p => {
-            const res = (p.latest_scan?.result || '').toLowerCase();
+            const res = (p.latest_scan?.ai_result || '').toLowerCase(); // SỬA: ai_result
             if (res.includes('nặng') || res.includes('severe')) severe++;
             else if (res.includes('trung bình') || res.includes('moderate')) moderate++;
             else if (res.includes('nhẹ') || res.includes('mild')) mild++;
             else safe++;
         });
-        const max = Math.max(severe, moderate, mild, safe, 1); // Tránh chia cho 0
+        const max = Math.max(severe, moderate, mild, safe, 1);
         return { severe, moderate, mild, safe, max };
     })();
 
     // --- HÀM XỬ LÝ BÁO CÁO ---
     const handleOpenReport = () => {
-        // Tự động điền thông tin nếu đang chọn bệnh nhân (ví dụ lấy từ chat hoặc danh sách)
         setReportForm({
-            patientId: '', // Có thể set mặc định ID bệnh nhân đầu tiên
-            aiResult: 'Nguy cơ cao (AI)', // Giả lập lấy từ DB
+            patientId: '', 
+            aiResult: 'Nguy cơ cao (AI)', 
             doctorDiagnosis: '',
             accuracy: 'CORRECT',
             notes: ''
         });
         setShowReportModal(true);
     };
-
 
     // --- RENDER ---
     if (isLoading) return <div style={styles.loading}>Đang tải dữ liệu Bác sĩ...</div>;
@@ -306,7 +343,8 @@ const [showReportModal, setShowReportModal] = useState(false);
             <aside style={styles.sidebar}>
                 <div style={styles.sidebarHeader}>
                     <div style={styles.logoRow}>
-                        <img src="/logo.svg" alt="Logo" style={{width:'30px', filter: 'brightness(0) invert(1)'}} />
+                        {/* <img src="/logo.svg" alt="Logo" style={{width:'30px', filter: 'brightness(0) invert(1)'}} /> */}
+                        <FaUserMd size={24} color="#fff" />
                         <span style={styles.logoText}>AURA DOCTOR</span>
                     </div>
                 </div>
@@ -458,7 +496,8 @@ const [showReportModal, setShowReportModal] = useState(false);
                                                     <td style={styles.td}>{item.date}</td>
                                                     <td style={styles.td}><span style={{color:'#e74c3c', fontWeight:'bold'}}>{item.aiResult}</span></td>
                                                     <td style={styles.td}>
-                                                        <button onClick={() => navigate(`/result/${item.id}`)} style={styles.primaryBtnSm}>
+                                                        {/* SỬA: Link tới AnalysisResult (thay vì /result/) */}
+                                                        <button onClick={() => navigate(`/analysis-result/${item.id}`)} style={styles.primaryBtnSm}>
                                                             <FaStethoscope style={{marginRight:5}}/> Chẩn đoán
                                                         </button>
                                                     </td>
@@ -494,7 +533,7 @@ const [showReportModal, setShowReportModal] = useState(false);
                                 <tbody>
                                     {patientsData.filter(p => {
                                         const matchName = (p.full_name||p.userName).toLowerCase().includes(searchTerm.toLowerCase());
-                                        const res = (p.latest_scan?.result || '').toLowerCase();
+                                        const res = (p.latest_scan?.ai_result || '').toLowerCase(); // SỬA: ai_result
                                         let matchRisk = true;
                                         if (riskFilter === 'SEVERE') matchRisk = res.includes('nặng') || res.includes('severe');
                                         if (riskFilter === 'MODERATE') matchRisk = res.includes('trung bình') || res.includes('moderate');
@@ -505,12 +544,12 @@ const [showReportModal, setShowReportModal] = useState(false);
                                             <td style={styles.td}><b>{p.full_name || p.userName}</b></td>
                                             <td style={styles.td}>{p.email}<br/><small>{p.phone}</small></td>
                                             <td style={styles.td}>
-                                                {p.latest_scan?.result ? (
+                                                {p.latest_scan?.ai_result ? (
                                                      <span style={{
-                                                        color: p.latest_scan.result.toLowerCase().includes('nặng') ? '#e74c3c' : 
-                                                               p.latest_scan.result.toLowerCase().includes('trung bình') ? '#e67e22' : '#2ecc71',
+                                                        color: p.latest_scan.ai_result.toLowerCase().includes('nặng') ? '#e74c3c' : 
+                                                               p.latest_scan.ai_result.toLowerCase().includes('trung bình') ? '#e67e22' : '#2ecc71',
                                                         fontWeight:'bold'
-                                                     }}>{p.latest_scan.result}</span>
+                                                     }}>{p.latest_scan.ai_result}</span>
                                                 ) : <span style={{color:'#999'}}>Chưa khám</span>}
                                             </td>
                                             <td style={styles.td}>
@@ -529,6 +568,7 @@ const [showReportModal, setShowReportModal] = useState(false);
                     {/* --- TAB CHAT --- */}
                     {activeTab === 'chat' && (
                         <div style={styles.messengerCard}>
+                            {/* ... (Giữ nguyên giao diện chat) ... */}
                             <div style={styles.chatListPanel}>
                                 <div style={styles.chatHeaderLeft}>
                                     <h3 style={{margin:0, fontSize:'16px'}}>Tư vấn Trực tuyến</h3>
@@ -571,6 +611,7 @@ const [showReportModal, setShowReportModal] = useState(false);
                             </div>
                         </div>
                     )}
+
                     {/* --- TAB REPORTS (BÁO CÁO) --- */}
                     {activeTab === 'reports' && (
                         <div style={{display:'flex', flexDirection:'column', gap:'20px'}}>
@@ -586,7 +627,6 @@ const [showReportModal, setShowReportModal] = useState(false);
                                     </button>
                                 </div>
                                 <div style={{padding:'25px', display:'grid', gridTemplateColumns:'repeat(4, 1fr)', gap:'20px'}}>
-                                    {/* ... Giữ nguyên các box thống kê ... */}
                                     <div style={{...styles.reportBox, borderLeft:'4px solid #3498db'}}>
                                         <div style={styles.reportLabel}>Tổng hồ sơ</div>
                                         <div style={styles.reportValue}>{patientsData.length}</div>
@@ -621,20 +661,20 @@ const [showReportModal, setShowReportModal] = useState(false);
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        {submittedReports.map((rp) => (
-                                            <tr key={rp.id} style={styles.tr}>
-                                                <td style={styles.td}>{rp.date}</td>
+                                        {submittedReports.map((rp, idx) => (
+                                            <tr key={idx} style={styles.tr}>
+                                                <td style={styles.td}>{new Date(rp.created_at || rp.date).toLocaleDateString()}</td>
                                                 <td style={styles.td}>
                                                     <span style={{
                                                         display:'flex', alignItems:'center', gap:'5px', fontWeight:'bold',
-                                                        color: rp.type.includes('sai') ? '#e74c3c' : '#2ecc71'
+                                                        color: (rp.accuracy || '').includes('INCORRECT') ? '#e74c3c' : '#2ecc71'
                                                     }}>
-                                                        {rp.type.includes('sai') ? <FaExclamationTriangle/> : <FaCheckCircle/>}
-                                                        {rp.type}
+                                                        {(rp.accuracy || '').includes('INCORRECT') ? <FaExclamationTriangle/> : <FaCheckCircle/>}
+                                                        {rp.accuracy === 'INCORRECT' ? 'Báo cáo sai lệch' : 'Xác nhận đúng'}
                                                     </span>
                                                 </td>
-                                                <td style={styles.td}>{rp.patient}</td>
-                                                <td style={styles.td}><span style={{background:'#e3f2fd', color:'#2196f3', padding:'3px 8px', borderRadius:'10px', fontSize:'11px'}}>Đã tiếp nhận</span></td>
+                                                <td style={styles.td}>{rp.patient_id}</td>
+                                                <td style={styles.td}><span style={{background:'#e3f2fd', color:'#2196f3', padding:'3px 8px', borderRadius:'10px', fontSize:'11px'}}>Đã gửi</span></td>
                                             </tr>
                                         ))}
                                     </tbody>
@@ -643,7 +683,7 @@ const [showReportModal, setShowReportModal] = useState(false);
                         </div>
                     )}
 
-            {/* --- CUỐI CÙNG: THÊM MODAL FORM BÁO CÁO VÀO TRƯỚC THẺ ĐÓNG </div> CỦA COMPONENT --- */}
+            {/* --- MODAL FORM BÁO CÁO --- */}
             {showReportModal && (
                 <div style={styles.modalOverlay}>
                     <div style={styles.modalContent}>
@@ -653,7 +693,7 @@ const [showReportModal, setShowReportModal] = useState(false);
                         </div>
                         <form onSubmit={submitReport} style={{padding:'20px'}}>
                             
-{/* Chọn bệnh nhân */}
+                            {/* Chọn bệnh nhân */}
                             <div style={{marginBottom:'15px'}}>
                                 <label style={styles.label}>Chọn Bệnh nhân:</label>
                                 <select 
@@ -661,15 +701,14 @@ const [showReportModal, setShowReportModal] = useState(false);
                                     value={reportForm.patientId} 
                                     onChange={e => {
                                         const selectedId = e.target.value;
-                                        // Tìm bệnh nhân trong danh sách để lấy kết quả AI mới nhất
-                                        const selectedPatient = patientsData.find(p => p.id === selectedId);
-                                        // Lấy kết quả AI (nếu chưa khám thì báo chưa có)
-                                        const aiRes = selectedPatient?.latest_scan?.result || 'Chưa có kết quả AI';
+                                        const selectedPatient = patientsData.find(p => p.id === parseInt(selectedId));
+                                        // Tự động lấy kết quả AI mới nhất
+                                        const aiRes = selectedPatient?.latest_scan?.ai_result || 'Chưa có kết quả AI';
 
                                         setReportForm({
                                             ...reportForm, 
                                             patientId: selectedId,
-                                            aiResult: aiRes // <--- Tự động điền kết quả AI
+                                            aiResult: aiRes 
                                         });
                                     }}
                                     required
@@ -681,7 +720,7 @@ const [showReportModal, setShowReportModal] = useState(false);
                                 </select>
                             </div>
 
-                            {/* --- THÊM MỚI: HIỂN THỊ KẾT QUẢ AI ĐỂ BÁC SĨ SO SÁNH --- */}
+                            {/* HIỂN THỊ KẾT QUẢ AI */}
                             {reportForm.patientId && (
                                 <div style={{marginBottom:'15px', background:'#f0f8ff', padding:'10px', borderRadius:'6px', border:'1px dashed #3498db'}}>
                                     <div style={{fontSize:'12px', color:'#555'}}>🤖 AI Chẩn đoán:</div>
@@ -748,13 +787,15 @@ const [showReportModal, setShowReportModal] = useState(false);
                                 <table style={styles.table}>
                                     <thead><tr><th>Ngày</th><th>Kết quả</th><th>Chi tiết</th></tr></thead>
                                     <tbody>
-                                        {historyRecords.map((r,i)=>(
+                                        {historyRecords.length > 0 ? historyRecords.map((r,i)=>(
                                             <tr key={i} style={styles.tr}>
                                                 <td style={styles.td}>{r.date}</td>
-                                                <td style={styles.td}><b style={{color: r.result.includes('Nặng')?'red':'green'}}>{r.result}</b></td>
-                                                <td style={styles.td}><button onClick={()=>navigate(`/result/${r.id}`)} style={styles.primaryBtnSm}>Xem</button></td>
+                                                <td style={styles.td}><b style={{color: (r.result||"").includes('Nặng')?'red':'green'}}>{r.result}</b></td>
+                                                <td style={styles.td}>
+                                                    <button onClick={()=>navigate(`/analysis-result/${r.id}`)} style={styles.primaryBtnSm}>Xem</button>
+                                                </td>
                                             </tr>
-                                        ))}
+                                        )) : <tr><td colSpan={3} style={styles.emptyCell}>Chưa có lịch sử khám</td></tr>}
                                     </tbody>
                                 </table>
                             )}
@@ -856,7 +897,7 @@ const styles: {[key:string]: React.CSSProperties} = {
     modalHeader: { padding:'15px 20px', background:'#f8f9fa', borderBottom:'1px solid #eee', display:'flex', justifyContent:'space-between', alignItems:'center' },
     closeBtn: { border:'none', background:'none', fontSize:'16px', cursor:'pointer', color:'#666' },
     reportBox: { background:'#f8f9fa', padding:'15px', borderRadius:'8px', boxShadow:'0 2px 5px rgba(0,0,0,0.02)' },
-    reportLabel: { fontSize:'13px', color:'#7f8c8d', marginBottom:'5px', textTransform:'uppercase', fontWeight:'600' as '600' }, // Ép kiểu string nếu TS báo lỗi
+    reportLabel: { fontSize:'13px', color:'#7f8c8d', marginBottom:'5px', textTransform:'uppercase', fontWeight:'600' as '600' }, 
     reportValue: { fontSize:'28px', fontWeight:'bold', color:'#2c3e50' },
     label: { display:'block', marginBottom:'5px', fontSize:'13px', fontWeight:'600', color:'#555' },
     inputForm: { width:'100%', padding:'10px', borderRadius:'6px', border:'1px solid #ddd', fontSize:'14px', outline:'none' },

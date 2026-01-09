@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { 
     FaCloudUploadAlt, FaTimes, FaSpinner, FaArrowLeft, 
-    FaUserMd, FaRobot, FaHome, FaSignOutAlt, FaImages, FaUser
+    FaUserMd, FaRobot, FaHome, FaSignOutAlt, FaImages, FaEye
 } from 'react-icons/fa';
 
 const Upload: React.FC = () => {
@@ -18,6 +18,10 @@ const Upload: React.FC = () => {
     const [userName, setUserName] = useState<string>('User');
     const [patients, setPatients] = useState<any[]>([]);
     const [selectedPatientId, setSelectedPatientId] = useState<string>('');
+    
+    // --- MỚI: State chọn mắt (Bắt buộc) ---
+    const [eyeSide, setEyeSide] = useState<string>('left'); // Mặc định là trái
+
     const [isLoading, setIsLoading] = useState(true);
 
     const fileInputRef = useRef<HTMLInputElement>(null);
@@ -30,19 +34,22 @@ const Upload: React.FC = () => {
 
             try {
                 // A. Lấy thông tin user
-                const userRes = await fetch('http://127.0.0.1:8000/api/users/me', {
+                const userRes = await fetch('http://localhost:8000/api/v1/users/me', {
                     headers: { 'Authorization': `Bearer ${token}` }
                 });
                 
                 if (userRes.ok) {
                     const userData = await userRes.json();
-                    const currentRole = userData.user_info.role.toUpperCase();
+                    const info = userData.user_info || userData; 
+                    const rawRole = info.role || '';
+                    const currentRole = rawRole.toLowerCase().trim();
+
                     setRole(currentRole);
-                    setUserName(userData.user_info.full_name || userData.user_info.userName);
+                    setUserName(info.full_name || info.userName || info.username || 'User');
 
                     // B. Nếu là Phòng khám -> Lấy danh sách bệnh nhân
-                    if (['CLINIC_OWNER', 'DOCTOR'].includes(currentRole)) {
-                        const clinicRes = await fetch('http://127.0.0.1:8000/api/clinic/dashboard-data', {
+                    if (['clinic', 'doctor'].includes(currentRole)) {
+                        const clinicRes = await fetch('http://localhost:8000/api/v1/clinics/dashboard-data', { // Lưu ý: /clinics có 's' hay không tùy main.py của bạn, check lại nếu 404
                             headers: { 'Authorization': `Bearer ${token}` }
                         });
                         if (clinicRes.ok) {
@@ -85,50 +92,80 @@ const Upload: React.FC = () => {
         setPreviewUrls(newUrls);
     };
 
+    // --- LOGIC UPLOAD ĐÃ SỬA (FIX LỖI 422) ---
     const handleUpload = async () => {
         if (selectedFiles.length === 0) return;
         setIsUploading(true);
         const token = localStorage.getItem('token');
-        const isClinic = ['CLINIC_OWNER', 'DOCTOR'].includes(role);
+        
+        let hasError = false;
+        let successCount = 0;
+        let lastResult = null;
 
         try {
-            if (isClinic) {
-                // Upload từng ảnh cho Clinic
-                for (const file of selectedFiles) {
-                    const formData = new FormData();
-                    formData.append('file', file);
-                    if (selectedPatientId) formData.append('patient_id', selectedPatientId);
-
-                    const response = await fetch('http://127.0.0.1:8000/api/clinic/upload-scan', {
-                        method: 'POST',
-                        headers: { 'Authorization': `Bearer ${token}` },
-                        body: formData
-                    });
-                    if (!response.ok) throw new Error("Lỗi upload");
-                }
-                alert("Phân tích hoàn tất!");
-                navigate('/clinic-dashboard');
-            } else {
-                // Upload mảng ảnh cho User
+            for (const file of selectedFiles) {
                 const formData = new FormData();
-                selectedFiles.forEach((file) => formData.append('files', file)); 
+                
+                // 1. File ảnh
+                formData.append('file', file); 
+                
+                // 2. Eye Side (QUAN TRỌNG - KHÔNG CÓ LÀ LỖI 422)
+                formData.append('eye_side', eyeSide);
 
-                const response = await fetch('http://127.0.0.1:8000/api/upload-eye-image', {
+                // 3. Patient ID (Nếu có)
+                if (selectedPatientId) {
+                    formData.append('patient_id', selectedPatientId);
+                }
+
+                // GỌI API
+                const response = await fetch('http://localhost:8000/api/v1/medical-records/analyze', {
                     method: 'POST',
-                    headers: { 'Authorization': `Bearer ${token}` },
+                    headers: { 
+                        'Authorization': `Bearer ${token}`,
+                    },
                     body: formData
                 });
 
-                if (response.ok) {
-                    alert("Upload thành công!");
-                    navigate('/dashboard');
+                if (!response.ok) {
+                    console.error("Lỗi upload file:", file.name, response.status, response.statusText);
+                    hasError = true;
+                    continue; 
+                }
+
+                const resultData = await response.json();
+                console.log("AI Result:", resultData);
+                
+                successCount++;
+                lastResult = resultData;
+            }
+
+            // --- XỬ LÝ KẾT QUẢ ---
+            if (successCount === 0) {
+                alert("Upload thất bại! Vui lòng kiểm tra lại ảnh hoặc kết nối.");
+            } else {
+                const msg = hasError 
+                    ? `Đã xử lý xong ${successCount}/${selectedFiles.length} ảnh. (Có file lỗi)`
+                    : "Phân tích AI hoàn tất 100%!";
+                
+                alert(msg);
+
+                // ĐIỀU HƯỚNG
+                if (!['clinic', 'doctor'].includes(role)) {
+                    // User thường -> Xem kết quả ngay
+                    if (lastResult) {
+                         // Dữ liệu trả về từ API mới thường bọc trong `analysis_result` hoặc trả thẳng
+                         // Cần đảm bảo Dashboard/Analysis nhận đúng format
+                        navigate(`/analysis-result/${lastResult.id}`, { state: { result: lastResult } });
+                    }
                 } else {
-                    alert("Upload thất bại.");
+                    // Bác sĩ -> Về Dashboard
+                    navigate('/clinic-dashboard');
                 }
             }
+
         } catch (error) {
-            console.error(error);
-            alert("Có lỗi xảy ra khi upload.");
+            console.error("System Error:", error);
+            alert("Lỗi kết nối Server!");
         } finally {
             setIsUploading(false);
         }
@@ -136,15 +173,14 @@ const Upload: React.FC = () => {
 
     const handleLogout = () => { localStorage.clear(); navigate('/login'); };
     const goBack = () => {
-        if(['CLINIC_OWNER', 'DOCTOR'].includes(role)) navigate('/clinic-dashboard');
+        if(['clinic', 'doctor'].includes(role)) navigate('/clinic-dashboard');
         else navigate('/dashboard');
     };
 
     if (isLoading) return <div style={styles.loading}><FaSpinner className="spin"/> Đang tải...</div>;
 
-    // --- RENDER SIDEBAR CONTENT DYNAMICALLY ---
     const renderSidebarNav = () => {
-        if (['CLINIC_OWNER', 'DOCTOR'].includes(role)) {
+        if (['clinic', 'doctor'].includes(role)) {
             return (
                 <nav style={styles.nav}>
                     <div style={styles.menuItem} onClick={goBack}><FaUserMd style={styles.menuIcon} /> Tổng hợp</div>
@@ -171,7 +207,7 @@ const Upload: React.FC = () => {
                         <img src="/logo.svg" alt="Logo" style={{width:'30px'}} />
                         <span style={styles.logoText}>AI SCANNER</span>
                     </div>
-                    <div style={styles.clinicName}>{['CLINIC_OWNER', 'DOCTOR'].includes(role) ? 'Dành cho Bác sĩ' : 'Cá nhân'}</div>
+                    <div style={styles.clinicName}>{['clinic', 'doctor'].includes(role) ? 'Dành cho Bác sĩ' : 'Cá nhân'}</div>
                 </div>
                 {renderSidebarNav()}
                 <div style={styles.sidebarFooter}>
@@ -195,31 +231,61 @@ const Upload: React.FC = () => {
                     <div style={styles.card}>
                         <div style={styles.cardHeader}>
                             <h3 style={styles.sectionTitle}>
-                                {['CLINIC_OWNER', 'DOCTOR'].includes(role) ? '1. Chọn Hồ sơ & Hình ảnh' : '1. Tải lên hình ảnh'}
+                                {['clinic', 'doctor'].includes(role) ? '1. Chọn Hồ sơ & Hình ảnh' : '1. Tải lên hình ảnh'}
                             </h3>
                         </div>
 
                         <div style={{padding: '30px'}}>
-                            {/* SELECT PATIENT (CLINIC ONLY) */}
-                            {['CLINIC_OWNER', 'DOCTOR'].includes(role) && (
-                                <div style={{marginBottom: '25px'}}>
-                                    <label style={styles.formLabel}>Chọn Bệnh nhân (Tùy chọn)</label>
-                                    <div style={{display:'flex', gap:'10px'}}>
+                            
+                            {/* KHU VỰC CHỌN THÔNG TIN (Patient + Eye Side) */}
+                            <div style={{display: 'flex', gap: '20px', flexWrap: 'wrap', marginBottom: '25px'}}>
+                                
+                                {/* SELECT PATIENT (CLINIC ONLY) */}
+                                {['clinic', 'doctor'].includes(role) && (
+                                    <div style={{flex: 1, minWidth: '250px'}}>
+                                        <label style={styles.formLabel}>Chọn Bệnh nhân</label>
                                         <select 
                                             style={styles.selectInput}
                                             value={selectedPatientId}
                                             onChange={(e) => setSelectedPatientId(e.target.value)}
                                         >
-                                            <option value="">-- Không chọn --</option>
+                                            <option value="">-- Khách vãng lai / Chưa chọn --</option>
                                             {patients.map(p => (
                                                 <option key={p.id} value={p.id}>{p.full_name} - {p.phone}</option>
                                             ))}
                                         </select>
-                                        <button style={styles.secondaryBtn} onClick={()=>navigate('/clinic-dashboard')}>+ Tạo mới</button>
                                     </div>
-                                    <p style={{fontSize:'12px', color:'#666', marginTop:'5px'}}>Nếu không chọn, kết quả sẽ được lưu vào mục "Chưa phân công".</p>
+                                )}
+
+                                {/* SELECT EYE SIDE (NEW) */}
+                                <div style={{flex: 1, minWidth: '200px'}}>
+                                    <label style={styles.formLabel}><FaEye style={{marginRight:5}}/>Vị trí mắt</label>
+                                    <div style={{display: 'flex', gap: '15px', marginTop: '5px'}}>
+                                        <label style={{display:'flex', alignItems:'center', cursor:'pointer'}}>
+                                            <input 
+                                                type="radio" 
+                                                name="eyeSide" 
+                                                value="left" 
+                                                checked={eyeSide === 'left'}
+                                                onChange={(e) => setEyeSide(e.target.value)}
+                                                style={{marginRight: '8px', transform:'scale(1.2)'}}
+                                            />
+                                            Mắt Trái (Left)
+                                        </label>
+                                        <label style={{display:'flex', alignItems:'center', cursor:'pointer'}}>
+                                            <input 
+                                                type="radio" 
+                                                name="eyeSide" 
+                                                value="right" 
+                                                checked={eyeSide === 'right'}
+                                                onChange={(e) => setEyeSide(e.target.value)}
+                                                style={{marginRight: '8px', transform:'scale(1.2)'}}
+                                            />
+                                            Mắt Phải (Right)
+                                        </label>
+                                    </div>
                                 </div>
-                            )}
+                            </div>
 
                             {/* UPLOAD ZONE */}
                             <div 
@@ -244,7 +310,7 @@ const Upload: React.FC = () => {
                             {/* PREVIEW GRID */}
                             {selectedFiles.length > 0 && (
                                 <div style={{marginTop: '25px'}}>
-                                    <h4 style={{fontSize:'14px', marginBottom:'10px', color:'#555'}}>Ảnh đã chọn ({selectedFiles.length})</h4>
+                                    <h4 style={{fontSize:'14px', marginBottom:'10px', color:'#555'}}>Ảnh đã chọn ({selectedFiles.length}) - {eyeSide === 'left' ? 'Mắt Trái' : 'Mắt Phải'}</h4>
                                     <div style={styles.previewGrid}>
                                         {previewUrls.map((url, idx) => (
                                             <div key={idx} style={styles.previewItem}>
@@ -275,7 +341,7 @@ const Upload: React.FC = () => {
     );
 };
 
-// --- STYLES (Đồng bộ với hệ thống Dashboard) ---
+// --- STYLES ---
 const styles: { [key: string]: React.CSSProperties } = {
     loading: { display:'flex', justifyContent:'center', alignItems:'center', height:'100vh', color:'#555', background:'#f4f6f9' },
     container: { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, display: 'flex', backgroundColor: '#f4f6f9', fontFamily: '"Segoe UI", sans-serif', overflow: 'hidden', zIndex: 1000 },
@@ -310,7 +376,7 @@ const styles: { [key: string]: React.CSSProperties } = {
     
     // Form Elements
     formLabel: { display: 'block', marginBottom: '8px', fontSize: '14px', fontWeight: '600', color: '#444' },
-    selectInput: { flex: 1, padding: '10px', borderRadius: '6px', border: '1px solid #dde2e5', fontSize: '14px', outline: 'none', backgroundColor: '#fff' },
+    selectInput: { width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid #dde2e5', fontSize: '14px', outline: 'none', backgroundColor: '#fff' },
     
     // Upload Zone
     uploadZone: { border: '2px dashed #007bff', borderRadius: '12px', padding: '40px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', backgroundColor: '#f8fbff', cursor: 'pointer', transition: 'background 0.2s' },

@@ -6,7 +6,7 @@ import {
     FaBell, FaSignOutAlt, FaSearch, FaUserCircle, FaCamera 
 } from 'react-icons/fa';
 
-// --- Dashboard Component ---
+// --- Dashboard Component (USER / PATIENT) ---
 const Dashboard: React.FC = () => {
     const navigate = useNavigate();
     
@@ -32,7 +32,7 @@ const Dashboard: React.FC = () => {
     const [showNotifications, setShowNotifications] = useState(false);
     const [hasViewedNotifications, setHasViewedNotifications] = useState(false);
 
-    // --- STATE FORM ĐĂNG KÝ ---
+    // --- STATE FORM ĐĂNG KÝ PHÒNG KHÁM ---
     const [clinicForm, setClinicForm] = useState({
         name: '', address: '', phone: '', license: '', description: ''
     });
@@ -55,14 +55,16 @@ const Dashboard: React.FC = () => {
         const token = localStorage.getItem('token');
         if (!token) return;
         try {
-            const res = await fetch('http://127.0.0.1:8000/api/chats', {
+            // SỬA: localhost
+            const res = await fetch('http://localhost:8000/api/v1/chats', {
                 headers: { 'Authorization': `Bearer ${token}` }
             });
             if (res.ok) {
                 const data = await res.json();
-                const serverChats = data.chats;
+                const serverChats = data.chats || []; // Fallback mảng rỗng
 
                 setChatData(prevChats => {
+                    // Giữ nguyên logic sort của bạn
                     const prevMap = new Map(prevChats.map((c: any) => [c.id, c]));
                     const mergedChats = serverChats.map((sChat: any) => {
                         const pChat: any = prevMap.get(sChat.id);
@@ -81,17 +83,56 @@ const Dashboard: React.FC = () => {
         } catch (error) { console.error("Lỗi chat:", error); }
     }, []);
 
-    // --- 2. HÀM TẢI LỊCH SỬ KHÁM ---
+    // --- 2. HÀM TẢI LỊCH SỬ KHÁM (QUAN TRỌNG) ---
+// Trong file dashboard.tsx
+
     const fetchMedicalRecords = useCallback(async () => {
         const token = localStorage.getItem('token');
         if (!token) return;
         try {
-            const historyRes = await fetch('http://127.0.0.1:8000/api/medical-records', {
+            // SỬA 1: Thêm dấu '/' ở cuối URL để tránh lỗi 307 Redirect
+            const historyRes = await fetch('http://localhost:8000/api/v1/medical-records/', {
                 headers: { 'Authorization': `Bearer ${token}` }
             });
+            
             if (historyRes.ok) {
-                const historyData = await historyRes.json();
-                setHistoryData(historyData.history);
+                const rawData = await historyRes.json();
+                const list = Array.isArray(rawData) ? rawData : (rawData.items || rawData.history || []);
+
+                console.log("Dữ liệu gốc từ API:", list); // Giữ log để debug
+
+                const mappedHistory = list.map((item: any) => {
+                // 1. Ngày tháng
+                const rawDate = item.created_at || item.upload_date || new Date().toISOString();
+                
+                // 2. Lấy object kết quả (Do backend đã sửa trả về chuẩn field analysis_result)
+                const analysisData = item.analysis_result || {};
+
+                // 3. Xác định trạng thái và kết quả hiển thị
+                // Ưu tiên lấy risk_level từ analysis_result
+                const risk = analysisData.risk_level;
+                
+                let statusDisplay = "PENDING";
+                let resultDisplay = "Đang phân tích...";
+
+                // Logic: Nếu có risk_level thì coi như đã xong
+                if (risk) {
+                    statusDisplay = "COMPLETED";
+                    resultDisplay = risk; 
+                }
+
+                return {
+                    id: item.id,
+                    date: new Date(rawDate).toLocaleDateString('vi-VN'),
+                    time: new Date(rawDate).toLocaleTimeString('vi-VN', {hour: '2-digit', minute:'2-digit'}),
+                    result: resultDisplay,
+                    status: statusDisplay,
+                    annotated_url: analysisData.annotated_image_url || null
+                };
+            });
+
+                // Sắp xếp mới nhất lên đầu
+                setHistoryData(mappedHistory.sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime()));
             }
         } catch (err) { console.error("Lỗi cập nhật hồ sơ:", err); }
     }, []);
@@ -101,11 +142,11 @@ const Dashboard: React.FC = () => {
         const token = localStorage.getItem('token');
         if (!token) return null;
         try {
-            const res = await fetch(`http://127.0.0.1:8000/api/chat/history/${partnerId}`, {
+            const res = await fetch(`http://localhost:8000/api/v1/chat/history/${partnerId}`, {
                 headers: { 'Authorization': `Bearer ${token}` }
             });
             const data = await res.json();
-            return data.messages;
+            return data.messages || [];
         } catch (err) { return []; }
     };
 
@@ -121,7 +162,8 @@ const Dashboard: React.FC = () => {
         const token = localStorage.getItem('token');
         if (token) {
             setChatData(prev => prev.map(c => c.id === partnerId ? { ...c, unread: false } : c));
-            await fetch(`http://127.0.0.1:8000/api/chat/read/${partnerId}`, {
+            // Sửa method thành POST hoặc PUT tùy backend chat của bạn
+            await fetch(`http://localhost:8000/api/v1/chat/read/${partnerId}`, {
                 method: 'PUT',
                 headers: { 'Authorization': `Bearer ${token}` }
             });
@@ -133,11 +175,13 @@ const Dashboard: React.FC = () => {
         const token = localStorage.getItem('token');
         if (!token) return;
         try {
-            const res = await fetch('http://127.0.0.1:8000/api/users/me', { headers: { 'Authorization': `Bearer ${token}` }});
+            const res = await fetch('http://localhost:8000/api/v1/users/me', { headers: { 'Authorization': `Bearer ${token}` }});
             if (res.ok) {
                 const data = await res.json();
-                const currentRole = data.user_info.role;
-                if (currentRole === 'CLINIC_OWNER') {
+                // SỬA: Lấy role trực tiếp
+                const currentRole = data.role || (data.user_info && data.user_info.role);
+                
+                if (currentRole === 'clinic') {
                      alert("🎉 Hồ sơ đã được duyệt! Chuyển hướng...");
                      navigate('/clinic-dashboard', { replace: true });
                 }
@@ -181,7 +225,7 @@ const Dashboard: React.FC = () => {
 
         try {
             const token = localStorage.getItem('token');
-            await fetch('http://127.0.0.1:8000/api/chat/send', {
+            await fetch('http://localhost:8000/api/v1/chat/send', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
                 body: JSON.stringify({ receiver_id: selectedChatId, content: textToSend })
@@ -219,27 +263,52 @@ const Dashboard: React.FC = () => {
     
         try {
             const formData = new FormData();
-            formData.append('clinicName', clinicForm.name);
-            formData.append('address', clinicForm.address);
-            formData.append('phone', clinicForm.phone);
-            formData.append('license', clinicForm.license);
-            formData.append('description', clinicForm.description);
-            if (clinicImages.front) formData.append('license_image_front', clinicImages.front);
-            if (clinicImages.back) formData.append('license_image_back', clinicImages.back);
+            
+            // 1. SỬA TÊN KEY CHO KHỚP VỚI BACKEND (api/clinic.py)
+            formData.append('name', clinicForm.name);       // Backend: name
+            formData.append('address', clinicForm.address); // Backend: address
+            formData.append('phone', clinicForm.phone);     // Backend: phone (đã map map với biến phone_number trong service)
+            
+            // 2. XỬ LÝ MÃ GIẤY PHÉP (Do DB chưa có cột license, ta ghép vào mô tả)
+            const fullDescription = `Mã GP: ${clinicForm.license}. \n${clinicForm.description}`;
+            formData.append('description', fullDescription);
 
-            const res = await fetch('http://127.0.0.1:8000/api/clinics/register', {
+            // 3. XỬ LÝ FILE ẢNH
+            // Backend chỉ nhận 1 file có key là "logo". 
+            // Ta ưu tiên lấy ảnh mặt trước làm logo.
+            if (clinicImages.front) {
+                formData.append('logo', clinicImages.front); 
+            } else if (clinicImages.back) {
+                // Nếu không có mặt trước thì lấy mặt sau đỡ
+                formData.append('logo', clinicImages.back);
+            }
+
+            // Gọi API
+            const res = await fetch('http://localhost:8000/api/v1/clinics/register', {
                 method: 'POST',
-                headers: { 'Authorization': `Bearer ${token}` },
+                headers: { 
+                    'Authorization': `Bearer ${token}` 
+                    // Lưu ý: KHÔNG ĐƯỢC set 'Content-Type': 'multipart/form-data' thủ công 
+                    // Fetch sẽ tự động set boundary cho FormData
+                },
                 body: formData
             });
 
+            const data = await res.json();
+
             if (res.ok) {
-                alert("Gửi yêu cầu đăng ký và hồ sơ chứng thực thành công!");
+                alert("Gửi yêu cầu đăng ký thành công! Vui lòng chờ Admin phê duyệt.");
+                // Reset form
                 setClinicForm({ name: '', address: '', phone: '', license: '', description: '' }); 
                 setClinicImages({ front: null, back: null });
                 setPreviewImages({ front: null, back: null });
+                
+                // Chuyển tab hoặc reload data nếu cần
+                setActiveTab('home');
             } else {
-                alert("Có lỗi xảy ra, vui lòng thử lại sau.");
+                // Hiển thị chi tiết lỗi trả về từ Backend
+                console.error("Lỗi Backend:", data);
+                alert(data.detail || "Có lỗi xảy ra, vui lòng kiểm tra lại thông tin.");
             }
         } catch (error) {
             console.error("Lỗi đăng ký:", error);
@@ -252,34 +321,46 @@ const Dashboard: React.FC = () => {
     // --- 5. POLLING TỰ ĐỘNG ---
     useEffect(() => {
         const interval = setInterval(async () => {
-             fetchChatData(); 
-             fetchMedicalRecords();
+             // Chỉ poll khi tab đang active để tiết kiệm tài nguyên
+             if (activeTab === 'messages') fetchChatData(); 
+             if (activeTab === 'home') fetchMedicalRecords();
+             
              if (selectedChatId && selectedChatId !== 'system') {
                 const serverMsgs = await fetchMessageHistory(selectedChatId);
                 if (serverMsgs && serverMsgs.length > currentMessages.length) setCurrentMessages(serverMsgs);
              }
+             // Check role nâng hạng
              if (userRole === 'USER') {
                  checkRoleAndRedirect();
              }
-        }, 3000);
+        }, 5000); // Tăng lên 5s cho đỡ lag
         return () => clearInterval(interval);
-    }, [selectedChatId, fetchChatData, fetchMedicalRecords, currentMessages.length, userRole, checkRoleAndRedirect]);
+    }, [selectedChatId, fetchChatData, fetchMedicalRecords, currentMessages.length, userRole, checkRoleAndRedirect, activeTab]);
 
-    // --- LOGIC KHỞI TẠO ---
+    // --- LOGIC KHỞI TẠO (GET /api/users/me) ---
     useEffect(() => {
         const initData = async () => {
             const token = localStorage.getItem('token');
             if (!token) { navigate('/login'); return; }
             try {
-                const userResponse = await fetch('http://127.0.0.1:8000/api/users/me', {
+                const userResponse = await fetch('http://localhost:8000/api/v1/users/me', {
                     headers: { 'Authorization': `Bearer ${token}` }
                 });
+                
                 if (!userResponse.ok) { handleLogout(); return; }
+                
                 const userData = await userResponse.json();
-                setUserName(userData.user_info.userName);
-                setUserRole(userData.user_info.role);
-                setUserId(userData.user_info.id);
-                setFullName(userData.user_info.full_name || '');
+                
+                // SỬA: Xử lý dữ liệu phẳng
+                // Nếu backend trả về phẳng: { username: '...', role: '...' }
+                // Nếu backend trả về lồng: { user_info: { ... } }
+                const info = userData.user_info || userData;
+                const userProfile = info.profile || {};
+
+                setUserName(info.username || info.userName || '');
+                setUserRole(info.role);
+                setUserId(info.id);
+                setFullName(userProfile.full_name || info.full_name || '');
                 
                 await fetchMedicalRecords(); 
                 await fetchChatData(); 
@@ -303,7 +384,9 @@ const Dashboard: React.FC = () => {
     const goToProfilePage = () => { setShowUserMenu(false); navigate('/profile'); };
     const goToUpload = () => navigate('/upload');
     const goToHistory = () => navigate('/history');
-    const goToDetail = (recordId: string) => navigate(`/result/${recordId}`);
+    
+    // SỬA: Link đúng tới trang chi tiết
+    const goToDetail = (recordId: string) => navigate(`/analysis-result/${recordId}`);
     
     const toggleNotifications = () => {
         const newState = !showNotifications;
@@ -313,15 +396,22 @@ const Dashboard: React.FC = () => {
     };
 
     const getStatusColor = (status: string) => {
-        if (status.includes("Hoàn thành") || status.includes("Completed")) return "#28a745"; 
-        if (status.includes("Lỗi") || status.includes("Failed")) return "#dc3545"; 
-        return "#e67e22"; 
+        if (!status) return "#e67e22";
+        const s = status.toUpperCase();
+        if (s.includes("HOÀN THÀNH") || s.includes("COMPLETED")) return "#28a745"; 
+        if (s.includes("LỖI") || s.includes("FAILED")) return "#dc3545"; 
+        return "#e67e22"; // Pending
     };
 
     const totalScans = historyData.length;
-    const highRiskCount = historyData.filter(item => item.result.includes('Nặng') || item.result.includes('Trung Bình') || item.result.includes('Severe') || item.result.includes('Moderate') || item.result.includes('PDR')).length;
+    // SỬA logic đếm nguy cơ cao dựa trên ai_result mới
+    const highRiskCount = historyData.filter(item => {
+        const res = (item.result || "").toLowerCase();
+        return res.includes('nặng') || res.includes('severe') || res.includes('moderate') || res.includes('pdr');
+    }).length;
+    
     const recentNotifications = historyData.slice(0, 5);
-    const serverHasUnread = recentNotifications.some(item => item.status === 'Hoàn thành');
+    const serverHasUnread = recentNotifications.some(item => (item.status || "").toUpperCase() === 'COMPLETED');
     const showRedDot = serverHasUnread && !hasViewedNotifications;
     const unreadMessagesCount = chatData.filter(chat => chat.unread).length; 
 
@@ -372,7 +462,7 @@ const Dashboard: React.FC = () => {
                                         ) : (
                                             <label style={styles.uploadLabel}>
                                                 <FaImage size={30} color="#007bff" />
-                                                <span style={{marginTop: '10px', fontSize:'14px', color:'#666'}}>Ảnh</span>
+                                                <span style={{marginTop: '10px', fontSize:'14px', color:'#666'}}>Ảnh mặt trước</span>
                                                 <input type="file" accept="image/*" hidden onChange={(e) => handleFileSelect(e, 'front')} />
                                             </label>
                                         )}
@@ -396,13 +486,13 @@ const Dashboard: React.FC = () => {
                                         ) : (
                                             <label style={styles.uploadLabel}>
                                                 <FaFileAlt size={30} color="#007bff" />
-                                                <span style={{marginTop: '10px', fontSize:'14px', color:'#666'}}>File</span>
+                                                <span style={{marginTop: '10px', fontSize:'14px', color:'#666'}}>Ảnh mặt sau/PDF</span>
                                                 <input type="file" accept='.pdf, .doc, .docx, .xls, .xlsx, .csv, image/*' hidden onChange={(e) => handleFileSelect(e, 'back')} />
                                             </label>
                                         )}
                                     </div>
                                 </div>
-                                <p style={{fontSize:'12px', color:'#999', marginTop:'8px'}}>* Định dạng hỗ trợ: JPG, PNG, PDF, DOCX. Dung lượng tối đa 5MB.</p>
+                                <p style={{fontSize:'12px', color:'#999', marginTop:'8px'}}>* Định dạng hỗ trợ: JPG, PNG, PDF. Dung lượng tối đa 5MB.</p>
                             </div>
 
                             <div>
@@ -429,7 +519,7 @@ const Dashboard: React.FC = () => {
                         <div style={styles.chatListScroll}>
                             {chatData.map(msg => (
                                 <div key={msg.id} style={{...styles.chatListItem, backgroundColor: selectedChatId === msg.id ? '#ebf5ff' : 'transparent'}} onClick={() => openChat(msg.id)}>
-                                    <div style={styles.avatarLarge}>{(msg.full_name || msg.sender).charAt(0).toUpperCase()}</div>
+                                    <div style={styles.avatarLarge}>{(msg.full_name || msg.sender || 'U').charAt(0).toUpperCase()}</div>
                                     <div style={{flex: 1, overflow: 'hidden'}}>
                                         <div style={{display: 'flex', justifyContent: 'space-between'}}><span style={{fontWeight: msg.unread ? '800' : '500', fontSize: '15px', color: '#050505'}}>{msg.full_name || msg.sender}</span></div>
                                         <div style={{display: 'flex', alignItems: 'center', gap: '5px'}}><p style={{margin: 0, fontSize: '13px', color: msg.unread ? '#050505' : '#65676b', fontWeight: msg.unread ? 'bold' : 'normal', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'}}>{msg.preview}</p><span style={{fontSize: '11px', color: '#65676b'}}>• {msg.time}</span></div>
@@ -449,7 +539,7 @@ const Dashboard: React.FC = () => {
                                 <div style={styles.messagesBody}>
                                     {currentMessages.map((msg, idx) => (
                                         <div key={idx} style={{display: 'flex', justifyContent: msg.is_me ? 'flex-end' : 'flex-start', marginBottom: '10px'}}>
-                                            {!msg.is_me && <div style={styles.avatarSmall}>{currentPartner?.sender.charAt(0).toUpperCase()}</div>}
+                                            {!msg.is_me && <div style={styles.avatarSmall}>{(currentPartner?.sender || 'U').charAt(0).toUpperCase()}</div>}
                                             <div style={{maxWidth: '65%', padding: '8px 12px', borderRadius: '18px', backgroundColor: msg.is_me ? '#007bff' : '#e4e6eb', color: msg.is_me ? 'white' : 'black', fontSize: '14.5px', lineHeight: '1.4', position: 'relative'}} title={msg.time}>{msg.content}</div>
                                         </div>
                                     ))}
@@ -463,7 +553,7 @@ const Dashboard: React.FC = () => {
                                 )}
                             </>
                         ) : (
-                            <div style={styles.emptyChatState}><div style={{width: '80px', height: '80px', borderRadius: '50%', backgroundColor: '#e4e6eb', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '20px'}}><img src="/logo.svg" alt="Logo" style={{width: '50px'}}  /></div><h3>Chào mừng đến với AURA Chat</h3><p>Chọn một cuộc trò chuyện để bắt đầu nhắn tin.</p></div>
+                            <div style={styles.emptyChatState}><div style={{width: '80px', height: '80px', borderRadius: '50%', backgroundColor: '#e4e6eb', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '20px'}}><FaComments size={40} color="#007bff"/></div><h3>Chào mừng đến với AURA Chat</h3><p>Chọn một cuộc trò chuyện để bắt đầu nhắn tin.</p></div>
                         )}
                     </div>
                 </div>
@@ -482,7 +572,8 @@ const Dashboard: React.FC = () => {
         if (historyData.length === 0 && activeTab === 'home') return (
             <div style={styles.card}>
                 <div style={{...styles.emptyStateContainer, padding: '50px'}}>
-                    <img src="/logo.svg" alt="Welcome" style={{ width: '100px', marginBottom: '20px' }} />
+                    {/* <img src="/logo.svg" alt="Welcome" style={{ width: '100px', marginBottom: '20px' }} /> */}
+                    <FaUserCircle size={80} color="#ddd" style={{marginBottom: 20}}/>
                     <h2>Chào mừng bạn đến với AURA!</h2>
                     <p style={{color:'#666'}}>Bạn chưa có dữ liệu sàng lọc nào.</p>
                     <button onClick={goToUpload} style={styles.primaryBtn}>Bắt đầu ngay</button>
@@ -516,11 +607,11 @@ const Dashboard: React.FC = () => {
                                     <td style={styles.td}>{item.date} <br/><small style={{color:'#999'}}>{item.time}</small></td>
                                     <td style={styles.td}>
                                         <span style={{color: getStatusColor(item.status), fontWeight:'bold'}}>
-                                            {item.status.includes('Đang') ? 'Đang phân tích...' : item.result}
+                                            {item.status.includes('PENDING') || item.status.includes('Đang') ? 'Đang phân tích...' : item.result}
                                         </span>
-                                        {item.status.includes('Đang') && <span style={styles.spinner}> ⏳</span>}
+                                        {(item.status.includes('PENDING') || item.status.includes('Đang')) && <span style={styles.spinner}> ⏳</span>}
                                     </td>
-                                    <td style={styles.td}><button onClick={() => goToDetail(item.id)} style={{...styles.actionBtn, opacity: item.status.includes('Đang') ? 0.6 : 1}}>Xem chi tiết</button></td>
+                                    <td style={styles.td}><button onClick={() => goToDetail(item.id)} style={{...styles.actionBtn, opacity: item.status.includes('PENDING') ? 0.6 : 1}}>Xem chi tiết</button></td>
                                 </tr>
                             ))}
                         </tbody>
@@ -534,11 +625,12 @@ const Dashboard: React.FC = () => {
 
     return (
         <div style={styles.container}>
-            {/* SIDEBAR - Styled like ClinicDashboard */}
+            {/* SIDEBAR */}
             <aside style={styles.sidebar}>
                 <div style={styles.sidebarHeader}>
                     <div style={styles.logoRow}>
-                        <img src="/logo.svg" alt="Logo" style={{width:'30px'}} />
+                        {/* <img src="/logo.svg" alt="Logo" style={{width:'30px'}} /> */}
+                        <FaHome size={24} color="#007bff"/>
                         <span style={styles.logoText}>AURA HEALTH</span>
                     </div>
                     <div style={styles.clinicName}>Dành cho Bệnh nhân</div>
@@ -592,8 +684,8 @@ const Dashboard: React.FC = () => {
                             style={styles.profileBox} 
                             onClick={() => setShowUserMenu(!showUserMenu)}
                             >
-                            <div style={styles.avatarCircle}>{userName.charAt(0).toUpperCase()}</div>
-                            <span style={styles.userNameText}>{full_name || userName}</span>
+                            <div style={styles.avatarCircle}>{userName ? userName.charAt(0).toUpperCase() : 'U'}</div>
+                            <span style={styles.userNameText}>{full_name || userName || 'User'}</span>
                         </div>
                         {showUserMenu && (
                             <div style={styles.dropdownMenu}>
@@ -622,7 +714,7 @@ const Dashboard: React.FC = () => {
     );
 };
 
-// --- STYLES (Synchronized with ClinicDashboard) ---
+// --- STYLES (Giữ nguyên, chỉ đảm bảo tính đồng bộ) ---
 const styles: { [key: string]: React.CSSProperties } = {
     // Layout
     container: { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, display: 'flex', backgroundColor: '#f4f6f9', fontFamily: '"Segoe UI", sans-serif', overflow: 'hidden', zIndex: 1000 },
@@ -683,7 +775,7 @@ const styles: { [key: string]: React.CSSProperties } = {
     previewImage: { width: '100%', height: '100%', objectFit: 'cover' },
     removeBtn: { position: 'absolute', top: '10px', right: '10px', backgroundColor: 'rgba(255,255,255,0.9)', border: 'none', borderRadius: '50%', width: '30px', height: '30px', cursor: 'pointer', display: 'flex', alignItems:'center',justifyContent:'center',color:'#dc3545',boxShadow:'0 2px 5px rgba(0, 0, 0, 0.2)' },
 
-    // Chat Interface (Adapted to new Card style)
+    // Chat Interface
     messengerCard: { display: 'flex', height: 'calc(100vh - 140px)', backgroundColor: 'white', borderRadius: '12px', boxShadow: '0 2px 10px rgba(0,0,0,0.03)', border:'1px solid #eaeaea', overflow: 'hidden' },
     chatListPanel: { width: '320px', borderRight: '1px solid #f0f0f0', display: 'flex', flexDirection: 'column' },
     chatHeaderLeft: { padding: '20px', borderBottom: '1px solid #f0f0f0' },

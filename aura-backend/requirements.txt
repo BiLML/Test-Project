@@ -5,13 +5,19 @@ python-multipart==0.0.20
 python-dotenv==1.2.1
 requests==2.32.5
 
-# --- Database ---
-motor==3.7.1
-pymongo==4.15.5
+# --- Database (PostgreSQL & ORM) ---
+# Đã xóa motor và pymongo
+sqlalchemy>=2.0.0
+psycopg2-binary>=2.9.9
+alembic>=1.13.0
+
+# --- Data Validation & Settings ---
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
 
 # --- Auth & Security ---
 python-jose==3.5.0
-bcrypt==5.0.0
+bcrypt==4.0.1
 passlib==1.7.4
 
 # --- Image Processing & Utils ---
@@ -21,7 +27,6 @@ pillow==12.0.0
 cloudinary==1.44.1
 
 # --- Email & Reports ---
-# SỬA LỖI: Cập nhật lên bản 2.2.0 để khớp với fastapi-mail
 email-validator==2.2.0
 fastapi-mail==1.4.2
 reportlab==4.2.5
@@ -30,6 +35,8 @@ reportlab==4.2.5
 onnxruntime==1.23.2
 
 # --- AI Development (Optional) ---
-# Nếu chỉ chạy server, bạn có thể xóa 2 dòng dưới để nhẹ máy
 tensorflow
 tf2onnx==1.16.1
+alembic 
+sqlalchemy 
+psycopg2-binary

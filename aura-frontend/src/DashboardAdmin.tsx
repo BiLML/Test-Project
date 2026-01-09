@@ -8,7 +8,7 @@ import {
 // --- INTERFACES ---
 interface User {
     id: string;
-    userName: string;
+    username: string;
     email: string;
     role: string;
     status: string;
@@ -50,30 +50,42 @@ const DashboardAdmin: React.FC = () => {
         if (!token) { navigate('/login'); return; }
 
         try {
-            const meRes = await fetch('http://127.0.0.1:8000/api/users/me', { headers: { 'Authorization': `Bearer ${token}` } });
+            // 1. Lấy thông tin Admin
+            const meRes = await fetch('http://127.0.0.1:8000/api/v1/users/me', { headers: { 'Authorization': `Bearer ${token}` } });
             if (meRes.ok) {
                 const meData = await meRes.json();
-                setAdminName(meData.user_info.userName);
+                // FIX LỖI: Kiểm tra cả 2 trường hợp dữ liệu (phẳng hoặc lồng)
+                const info = meData.user_info || meData; 
+                setAdminName(info.username || info.userName || 'Admin');
             }
 
-            const userRes = await fetch('http://127.0.0.1:8000/api/admin/users', { headers: { 'Authorization': `Bearer ${token}` } });
+            // 2. Lấy danh sách Users
+            const userRes = await fetch('http://127.0.0.1:8000/api/v1/admin/users', { headers: { 'Authorization': `Bearer ${token}` } });
             if (userRes.ok) {
                 const data = await userRes.json();
-                setUserList(data.users.filter((u: User) => u.role !== 'ADMIN'));
-                setDoctorList(data.users.filter((u: User) => u.role === 'DOCTOR'));
+                // Backend trả về { users: [...] } hoặc list trực tiếp
+                const users = data.users || data || []; 
+                setUserList(users.filter((u: User) => u.role !== 'admin'));
+                setDoctorList(users.filter((u: User) => u.role === 'doctor'));
             }
 
-            const clinicRes = await fetch('http://127.0.0.1:8000/api/admin/clinics/pending', { headers: { 'Authorization': `Bearer ${token}` } });
+            // 3. Lấy danh sách Phòng khám chờ duyệt
+            const clinicRes = await fetch('http://127.0.0.1:8000/api/v1/clinics/admin/pending', { 
+                headers: { 'Authorization': `Bearer ${token}` } 
+            });
             if (clinicRes.ok) {
                 const data = await clinicRes.json();
-                setClinicRequests(data.requests);
+                setClinicRequests(data.requests || []);
             }
 
-            const reportRes = await fetch('http://127.0.0.1:8000/api/admin/reports', { headers: { 'Authorization': `Bearer ${token}` } });
-            if (reportRes.ok) {
-                const data = await reportRes.json();
-                setFeedbackList(data.reports);
-            }
+            // 4. Lấy báo cáo (Nếu chưa có API này thì bỏ qua hoặc try-catch riêng để không chặn code)
+            try {
+                const reportRes = await fetch('http://127.0.0.1:8000/api/v1/admin/reports', { headers: { 'Authorization': `Bearer ${token}` } });
+                if (reportRes.ok) {
+                    const data = await reportRes.json();
+                    setFeedbackList(data.reports || []);
+                }
+            } catch (e) { console.warn("Chưa có API reports"); }
 
         } catch (error) {
             console.error(error);
@@ -81,7 +93,6 @@ const DashboardAdmin: React.FC = () => {
             setIsLoading(false);
         }
     }, [navigate]);
-
     useEffect(() => { fetchData(); }, [fetchData]);
 
     useEffect(() => {
@@ -103,7 +114,7 @@ const DashboardAdmin: React.FC = () => {
         if(!window.confirm(action === 'APPROVED' ? "Duyệt phòng khám này?" : "Từ chối yêu cầu này?")) return;
         const token = localStorage.getItem('token');
         try {
-            const res = await fetch(`http://127.0.0.1:8000/api/admin/clinics/${clinicId}/status`, {
+            const res = await fetch(`http://127.0.0.1:8000/api/v1/clinics/admin/${clinicId}/status`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
                 body: JSON.stringify({ status: action })
@@ -257,15 +268,15 @@ const DashboardAdmin: React.FC = () => {
                                                 <tr key={u.id} style={styles.tr}>
                                                     <td style={styles.td}>
                                                         <div style={{display:'flex', alignItems:'center', gap:'10px'}}>
-                                                            <div style={styles.avatarSmall}>{u.userName.charAt(0)}</div>
-                                                            <b>{u.userName}</b>
+                                                            <div style={styles.avatarSmall}>{u.username.charAt(0)}</div>
+                                                            <b>{u.username}</b>
                                                         </div>
                                                     </td>
                                                     <td style={styles.td}>{u.email}</td>
                                                     <td style={styles.td}>
                                                         <span style={{
                                                             ...styles.roleBadge, 
-                                                            background: u.role==='DOCTOR' ? '#0ea5e9': u.role==='CLINIC_OWNER' ? '#8b5cf6' : '#22c55e'
+                                                            background: u.role==='doctor' ? '#0ea5e9': u.role==='clinic' ? '#8b5cf6' : '#22c55e'
                                                         }}>{u.role}</span>
                                                     </td>
                                                     <td style={styles.td}><span style={styles.statusActive}>Active</span></td>
@@ -273,7 +284,7 @@ const DashboardAdmin: React.FC = () => {
                                                         {u.assigned_doctor_id ? (
                                                             <span style={styles.doctorTag}>
                                                                 <FaUserMd style={{marginRight:5}}/>
-                                                                {doctorList.find(d => d.id === u.assigned_doctor_id)?.userName || 'Dr.'}
+                                                                {doctorList.find(d => d.id === u.assigned_doctor_id)?.username || 'Dr.'}
                                                             </span>
                                                         ) : <span style={{color:'#cbd5e1'}}>--</span>}
                                                     </td>

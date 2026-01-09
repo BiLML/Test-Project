@@ -1,20 +1,23 @@
 version: '3.8'
 
 services:
-  # 1. DATABASE
-  mongo_db:
-    image: mongo:6.0
-    container_name: aura_mongo
+  postgres_db:
+    image: postgres:15-alpine
+    container_name: aura_postgres
+    restart: always
+    environment:
+      - POSTGRES_USER=aura_user
+      - POSTGRES_PASSWORD=aura_password
+      - POSTGRES_DB=aura_db
     ports:
-      - "27017:27017"
+      - "5432:5432"
     volumes:
-      - mongo_data:/data/db
+      - postgres_data:/var/lib/postgresql/data
 
-  # 2. AI SERVICE
   ai_service:
     build: 
       context: ./aura-backend
-      dockerfile: Dockerfile  # <--- SỬA: Đã xóa chữ 'tools/' đi vì file giờ nằm ở ngoài
+      dockerfile: Dockerfile
     container_name: aura_ai_core
     command: python ai_service/main.py 
     ports:
@@ -24,7 +27,6 @@ services:
     volumes:
       - ./aura-backend:/app
 
-  # 3. BACKEND CORE
   backend_core:
     build: 
       context: ./aura-backend
@@ -34,17 +36,17 @@ services:
     ports:
       - "8000:8000"
     depends_on:
-      - mongo_db
+      - postgres_db
       - ai_service
     env_file:
       - ./aura-backend/.env
     environment:
-      - MONGO_URL=mongodb://mongo_db:27017/aura_db
+      # Ghi đè biến môi trường để đảm bảo kết nối đúng trong Docker
+      - DATABASE_URL=postgresql://aura_user:aura_password@postgres_db:5432/aura_db
       - AI_SERVICE_URL=http://ai_service:8001/analyze 
     volumes:
       - ./aura-backend:/app
 
-  # 4. FRONTEND
   frontend:
     build: ./aura-frontend
     container_name: aura_frontend
@@ -57,4 +59,4 @@ services:
       - /app/node_modules
 
 volumes:
-  mongo_data:
+  postgres_data:

@@ -31,7 +31,7 @@ const Login = () => {
             
             if (standardizedRole === 'admin') navigate('/admin', { replace: true });
             else if (standardizedRole === 'doctor') navigate('/dashboarddr', { replace: true });
-            else if (standardizedRole === 'clinic_owner') navigate('/clinic-dashboard', { replace: true });
+            else if (standardizedRole === 'clinic') navigate('/clinic-dashboard', { replace: true });
             else navigate('/dashboard', { replace: true });
         }
     };
@@ -40,7 +40,7 @@ const Login = () => {
     const loginWithGoogle = useGoogleLogin({
         onSuccess: async (tokenResponse) => {
             try {
-                const response = await fetch('http://127.0.0.1:8000/api/google-login', {
+                const response = await fetch('http://127.0.0.1:8000/api/v1/auth/google-login', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ token: tokenResponse.access_token }),
@@ -58,7 +58,7 @@ const Login = () => {
     // --- 3. LOGIC FACEBOOK (MỚI) ---
     const handleFacebookResponse = async (response: any) => {
         try {
-            const res = await fetch('http://127.0.0.1:8000/api/facebook-login', {
+            const res = await fetch('http://127.0.0.1:8000/api/v1/auth/facebook-login', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -78,20 +78,71 @@ const Login = () => {
         }
     };
 
-    // --- 4. LOGIC ĐĂNG NHẬP THƯỜNG ---
+// --- 4. LOGIC ĐĂNG NHẬP THƯỜNG (Đã sửa chuẩn Backend mới) ---
     const handleLogin = async (e: React.FormEvent) => {
         e.preventDefault();
         setError('');
+
         try {
-            const response = await fetch('http://127.0.0.1:8000/api/login', {
+            // BƯỚC 1: Tạo dữ liệu dạng Form URL Encoded (Chuẩn OAuth2)
+            // Backend FastAPI mặc định không nhận JSON ở endpoint login này
+            const formData = new URLSearchParams();
+            formData.append('username', userName); // Lưu ý: 'username' viết thường
+            formData.append('password', password);
+
+            // BƯỚC 2: Gọi API Login
+            const response = await fetch('http://localhost:8000/api/v1/auth/login', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ userName, password }),
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: formData.toString(), // Chuyển sang chuỗi a=1&b=2
             });
+
             const data = await response.json();
-            if (!response.ok) setError(data.detail || 'Đăng nhập thất bại');
-            else handleLoginSuccess(data);
+
+            if (!response.ok) {
+                // Xử lý lỗi (Backend trả về detail là mảng hoặc chuỗi)
+                const errorMsg = typeof data.detail === 'string' 
+                    ? data.detail 
+                    : 'Đăng nhập thất bại (Sai tài khoản hoặc mật khẩu)';
+                setError(errorMsg);
+                return;
+            }
+
+            // BƯỚC 3: Xử lý dữ liệu trả về
+            // Dựa vào ảnh: response có { access_token, role, token_type }
+            
+            // 3.1. Lưu Token
+            localStorage.setItem('token', data.access_token);
+
+            // 3.2. Lưu thông tin User
+            // Vì API login mới trả về trực tiếp "role" ở ngoài, ta tạo lại object user_info giả
+            // để các trang khác trong App không bị lỗi khi get localStorage
+            const userInfoToSave = {
+                username: userName,
+                role: data.role // Lấy role từ API trả về
+            };
+
+            if (rememberMe) {
+                localStorage.setItem('user_info', JSON.stringify(userInfoToSave));
+            } else {
+                sessionStorage.setItem('user_info', JSON.stringify(userInfoToSave));
+            }
+
+            // 3.3. Điều hướng (Navigation)
+            console.log("Login Role:", data.role); // Log ra để kiểm tra
+            
+            // Chuẩn hóa role về chữ thường để so sánh cho chắc ăn
+            const role = data.role ? data.role.toLowerCase() : 'user';
+
+            if (role === 'admin') navigate('/admin', { replace: true });
+            else if (role === 'doctor') navigate('/dashboarddr', { replace: true });
+            else if (role === 'clinic') navigate('/clinic-dashboard', { replace: true });
+            else navigate('/dashboard', { replace: true });
+
         } catch (err) {
+            console.error("Lỗi đăng nhập:", err);
             setError('Không thể kết nối đến Server!');
         }
     };

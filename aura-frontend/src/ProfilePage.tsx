@@ -10,11 +10,11 @@ import {
 interface ProfileState {
     email: string;
     phone: string;
-    age: string;
+    age: string | number; // Cho phép cả số và chuỗi để tránh lỗi hiển thị
     hometown: string;
     insurance_id: string; 
-    height: string; 
-    weight: string; 
+    height: string | number; 
+    weight: string | number; 
     gender: string; 
     nationality: string; 
     full_name: string;
@@ -24,49 +24,64 @@ const ProfilePage: React.FC = () => {
     const navigate = useNavigate();
     
     // --- STATE DỮ LIỆU ---
-    const [userName, setUserName] = useState('');
-    const [userRole, setUserRole] = useState(''); // Để biết quay về dashboard nào
+    const [userName, setUserName] = useState(''); // Tên đăng nhập (username)
+    const [userRole, setUserRole] = useState('');
+    
+    // State chứa thông tin chi tiết
     const [profileData, setProfileData] = useState<ProfileState>({
         email: '', phone: '', age: '', hometown: '',
         insurance_id: '', height: '', weight: '', gender: '', nationality: '', full_name:''
     });
+    
     const [isSaving, setIsSaving] = useState(false);
     const [isLoading, setIsLoading] = useState(true);
 
-    // --- FETCH DATA ---
+    // --- 1. FETCH DATA (GET /api/users/me) ---
     useEffect(() => {
         const fetchProfileData = async () => {
             const token = localStorage.getItem('token');
             if (!token) { navigate('/login'); return; }
 
             try {
-                const res = await fetch('http://127.0.0.1:8000/api/users/me', {
+                // SỬA 1: Dùng localhost cho đồng bộ
+                const res = await fetch('http://localhost:8000/api/v1/users/me', {
                     headers: { 'Authorization': `Bearer ${token}` }
                 });
 
-                if (!res.ok) throw new Error("Lỗi tải dữ liệu");
+                if (!res.ok) throw new Error("Lỗi tải dữ liệu (Token hết hạn hoặc lỗi server)");
                 
+                // SỬA 2: Xử lý dữ liệu phẳng từ FastAPI
                 const userData = await res.json();
-                const info = userData.user_info;
-
-                setUserName(info.userName);
-                setUserRole(info.role);
+                
+                // Nếu backend trả về phẳng (không có user_info bọc ngoài)
+                // userData sẽ có dạng { username: "...", role: "...", email: "..." }
+                // Nếu backend của bạn vẫn trả về lồng nhau, hãy sửa dòng dưới thành: const info = userData.user_info || userData;
+                const info = userData; 
+                const profile = info.profile || {}; // Lấy object profile
+                const medical = profile.medical_info || {}; // Lấy object medical_info (JSONB)
+                // Mapping dữ liệu
+                setUserName(info.username || ''); // Ưu tiên 'username' (snake_case)
+                setUserRole(info.role || '');
                 
                 setProfileData({
                     email: info.email || '', 
-                    phone: info.phone || '',
-                    age: info.age || '',
-                    hometown: info.hometown || '',
-                    insurance_id: info.insurance_id || '',
-                    height: info.height || '',
-                    weight: info.weight || '',
-                    gender: info.gender || '',
-                    nationality: info.nationality || '',
-                    full_name: info.full_name || ''
+                    phone: profile.phone || '',
+                    full_name: profile.full_name || '',
+                    age: medical.age || '',
+                    hometown: medical.hometown || '',
+                    insurance_id: medical.insurance_id || '',
+                    height: medical.height || '',
+                    weight: medical.weight || '',
+                    gender: medical.gender || '',
+                    nationality: medical.nationality || ''
                 });
 
             } catch (error) {
                 console.error(error);
+                // Nếu lỗi 401 (Unauthorized) thì đẩy về login
+                if ((error as Error).message.includes('Token')) {
+                    navigate('/login');
+                }
             } finally {
                 setIsLoading(false);
             }
@@ -81,18 +96,38 @@ const ProfilePage: React.FC = () => {
         setProfileData(prev => ({ ...prev, [name]: value }));
     };
 
+    // --- 2. UPDATE DATA (PUT /api/users/me) ---
     const handleSaveProfile = async () => {
         const token = localStorage.getItem('token');
         setIsSaving(true);
         try {
-            const res = await fetch('http://127.0.0.1:8000/api/users/profile', {
+            // SỬA 3: Endpoint cập nhật thường dùng chính là /me với method PUT
+            // Kiểm tra Swagger của bạn: nếu là /api/users/profile thì sửa lại dòng dưới
+            const API_URL = 'http://localhost:8000/api/v1/users/me';
+
+            const res = await fetch(API_URL, {
                 method: 'PUT',
-                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-                body: JSON.stringify(profileData)
+                headers: { 
+                    'Content-Type': 'application/json', 
+                    'Authorization': `Bearer ${token}` 
+                },
+                body: JSON.stringify({
+                    ...profileData,
+                    // Lưu ý: Nếu backend yêu cầu số nguyên cho age/height, hãy ép kiểu ở đây:
+                    // age: Number(profileData.age) || null,
+                })
             });
+
             const data = await res.json(); 
-            if (res.ok) alert("Cập nhật hồ sơ thành công!");
-            else alert(data.detail || "Lỗi khi lưu hồ sơ.");
+            
+            if (res.ok) {
+                alert("Cập nhật hồ sơ thành công!");
+                // Có thể cập nhật lại localStorage nếu cần
+            } else {
+                // Xử lý hiển thị lỗi chi tiết
+                const msg = data.detail ? JSON.stringify(data.detail) : "Lỗi khi lưu hồ sơ.";
+                alert(msg);
+            }
         } catch (error) {
             console.error(error);
             alert("Lỗi kết nối server.");
@@ -102,21 +137,27 @@ const ProfilePage: React.FC = () => {
     };
 
     const handleBack = () => {
-        if (userRole === 'CLINIC_OWNER') navigate('/clinic-dashboard');
+        // Chuẩn hóa role về chữ thường/hoa để so sánh chính xác
+        const role = userRole.toUpperCase();
+        if (role === 'CLINIC_OWNER' || role === 'DOCTOR') navigate('/clinic-dashboard');
         else navigate('/dashboard');
     };
 
-    const handleLogout = () => { localStorage.clear(); navigate('/login', { replace: true }); };
+    const handleLogout = () => { 
+        localStorage.clear(); 
+        navigate('/login', { replace: true }); 
+    };
 
     if (isLoading) return <div style={styles.loading}><FaSpinner className="spin" style={{marginRight: 10}}/> Đang tải hồ sơ...</div>;
 
     return (
         <div style={styles.container}>
-            {/* SIDEBAR (Giống Dashboard nhưng tối giản cho trang Setting) */}
+            {/* SIDEBAR */}
             <aside style={styles.sidebar}>
                 <div style={styles.sidebarHeader}>
                     <div style={styles.logoRow}>
-                        <img src="/logo.svg" alt="Logo" style={{width:'30px'}} />
+                        {/* <img src="/logo.svg" alt="Logo" style={{width:'30px'}} /> */}
+                        <FaUser style={{fontSize: '24px', color: '#007bff'}} />
                         <span style={styles.logoText}>CÀI ĐẶT</span>
                     </div>
                     <div style={styles.clinicName}>Quản lý tài khoản</div>
@@ -141,8 +182,10 @@ const ProfilePage: React.FC = () => {
                     <h2 style={styles.pageTitle}>Chỉnh sửa hồ sơ</h2>
                     <div style={styles.headerRight}>
                         <div style={styles.profileBox}>
-                            <div style={styles.avatarCircle}>{userName.charAt(0).toUpperCase()}</div>
-                            <span style={styles.userNameText}>{profileData.full_name || userName}</span>
+                            <div style={styles.avatarCircle}>
+                                {userName ? userName.charAt(0).toUpperCase() : 'U'}
+                            </div>
+                            <span style={styles.userNameText}>{profileData.full_name || userName || 'User'}</span>
                         </div>
                     </div>
                 </header>
@@ -160,7 +203,9 @@ const ProfilePage: React.FC = () => {
                             {/* Avatar Section */}
                             <div style={{display:'flex', alignItems:'center', marginBottom:'40px', paddingBottom:'30px', borderBottom:'1px solid #eee'}}>
                                 <div style={{position:'relative', marginRight:'25px'}}>
-                                    <div style={styles.largeAvatar}>{userName.charAt(0).toUpperCase()}</div>
+                                    <div style={styles.largeAvatar}>
+                                        {userName ? userName.charAt(0).toUpperCase() : 'U'}
+                                    </div>
                                     <button style={styles.cameraBtn}><FaCamera/></button>
                                 </div>
                                 <div>
@@ -171,7 +216,7 @@ const ProfilePage: React.FC = () => {
 
                             {/* Form Grid */}
                             <div style={styles.formGrid}>
-                                {/* Cột 1: Thông tin tài khoản */}
+                                {/* Cột 1: Thông tin liên hệ */}
                                 <div style={styles.sectionTitle}>1. Thông tin liên hệ</div>
                                 <div style={styles.gridRow}>
                                     <div style={styles.formGroup}>
@@ -241,7 +286,7 @@ const ProfilePage: React.FC = () => {
     );
 };
 
-// --- STYLES (Đồng bộ hoàn toàn với ClinicDashboard/Dashboard) ---
+// --- STYLES (Đồng bộ) ---
 const styles: {[key:string]: React.CSSProperties} = {
     loading: { display:'flex', justifyContent:'center', alignItems:'center', height:'100vh', color:'#555', backgroundColor: '#f4f6f9' },
     container: { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, display: 'flex', backgroundColor: '#f4f6f9', fontFamily: '"Segoe UI", sans-serif', overflow: 'hidden', zIndex: 1000 },
@@ -288,7 +333,7 @@ const styles: {[key:string]: React.CSSProperties} = {
     primaryBtn: { padding: '10px 20px', background: '#007bff', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight:'600', display:'flex', alignItems:'center', fontSize:'14px' },
 };
 
-// Thêm animation quay tròn cho spinner
+// Animation Spinner
 const styleSheet = document.createElement("style");
 styleSheet.innerText = `@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } } .spin { animation: spin 2s linear infinite; }`;
 document.head.appendChild(styleSheet);
