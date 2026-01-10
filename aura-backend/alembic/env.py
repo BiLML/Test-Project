@@ -6,6 +6,7 @@ from sqlalchemy import engine_from_config
 from sqlalchemy import pool
 
 from alembic import context
+from dotenv import load_dotenv
 
 # ----------------------------------------------------------------------
 # [PHẦN 1: CẤU HÌNH ĐƯỜNG DẪN & IMPORT]
@@ -13,7 +14,9 @@ from alembic import context
 
 # Thêm đường dẫn root vào sys.path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
+current_path = os.path.dirname(os.path.abspath(__file__))
+root_path = os.path.join(current_path, "..")
+load_dotenv(os.path.join(root_path, ".env"))
 # Import Base và DATABASE_URL từ core/database (để đồng bộ kết nối)
 from core.database import DATABASE_URL 
 from models.base import Base
@@ -29,12 +32,12 @@ from models.medical import (
     DoctorValidation
 )  # [Fix] Đã sửa từ medical_record -> medical
 from models.billing import ServicePackage, Subscription
+from models.chat import Message
 # Nếu có thêm model mới, hãy thêm vào đây
 # ----------------------------------------------------------------------
 
 # Lấy config từ alembic.ini
 config = context.config
-
 # [QUAN TRỌNG] Ghi đè sqlalchemy.url bằng URL thực tế từ code python
 # Giúp chạy đúng trên Docker/Local mà không cần sửa file alembic.ini thủ công
 config.set_main_option("sqlalchemy.url", DATABASE_URL)

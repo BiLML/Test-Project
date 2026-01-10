@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { 
     FaPaperPlane, FaTrash, FaImage, FaFileAlt, 
     FaHome, FaComments, FaHospital, FaCreditCard, 
-    FaBell, FaSignOutAlt, FaSearch, FaUserCircle, FaCamera 
+    FaBell, FaSignOutAlt, FaSearch, FaUserCircle, FaCamera, FaCheck, FaCheckDouble 
 } from 'react-icons/fa';
 
 // --- Dashboard Component (USER / PATIENT) ---
@@ -199,11 +199,18 @@ const Dashboard: React.FC = () => {
         const textToSend = newMessageText;
         setNewMessageText(''); 
 
+        // Thay thế đoạn tạo tempMsg bằng đoạn này:
+
+        const now = new Date();
+        // Lấy giờ phút và tự thêm số 0 đằng trước nếu < 10
+        const timeString = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+
         const tempMsg = {
             id: Date.now().toString(),
             content: textToSend,
             is_me: true,
-            time: new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})
+            time: timeString, // <--- Dùng biến này thay vì toLocaleTimeString
+            is_read: false
         };
         setCurrentMessages(prev => [...prev, tempMsg]);
 
@@ -538,9 +545,54 @@ const Dashboard: React.FC = () => {
                                 </div>
                                 <div style={styles.messagesBody}>
                                     {currentMessages.map((msg, idx) => (
-                                        <div key={idx} style={{display: 'flex', justifyContent: msg.is_me ? 'flex-end' : 'flex-start', marginBottom: '10px'}}>
-                                            {!msg.is_me && <div style={styles.avatarSmall}>{(currentPartner?.sender || 'U').charAt(0).toUpperCase()}</div>}
-                                            <div style={{maxWidth: '65%', padding: '8px 12px', borderRadius: '18px', backgroundColor: msg.is_me ? '#007bff' : '#e4e6eb', color: msg.is_me ? 'white' : 'black', fontSize: '14.5px', lineHeight: '1.4', position: 'relative'}} title={msg.time}>{msg.content}</div>
+                                        <div key={idx} style={{
+                                            ...styles.messageRow, 
+                                            justifyContent: msg.is_me ? 'flex-end' : 'flex-start'
+                                        }}>
+                                            {/* Avatar bên trái (người khác) */}
+                                            {!msg.is_me && (
+                                                <div style={{
+                                                    ...styles.avatarSmall, 
+                                                    alignSelf: 'flex-end', 
+                                                    marginBottom: '20px',
+                                                    marginRight: '8px'
+                                                }}>
+                                                    {(chatData.find(c=>c.id===selectedChatId)?.sender || 'U').charAt(0).toUpperCase()}
+                                                </div>
+                                            )}
+                                            
+                                            <div style={{display:'flex', flexDirection:'column', alignItems: msg.is_me ? 'flex-end' : 'flex-start', maxWidth:'70%'}}>
+                                                {/* Bong bóng chat */}
+                                                <div style={msg.is_me ? styles.bubbleMe : styles.bubbleOther}>
+                                                    {msg.content}
+                                                </div>
+
+                                                {/* Thời gian & Tick */}
+                                                <div style={{
+                                                    display:'flex', alignItems:'center', gap:'4px', 
+                                                    marginTop:'2px', marginBottom:'10px', 
+                                                    fontSize:'11px', color:'#999',
+                                                    paddingRight: msg.is_me ? '5px' : '0',
+                                                    paddingLeft: !msg.is_me ? '5px' : '0'
+                                                }}>
+                                                    <span>{msg.time}</span>
+                                                    
+                                                    {/* Chỉ hiện Tick cho tin nhắn của mình */}
+                                                    {msg.is_me && (
+                                                        <span style={{marginLeft:'2px', display:'flex', alignItems:'center'}}>
+                                                            {msg.is_read ? (
+                                                                <span title="Đã xem" style={{display:'flex', alignItems:'center', color: '#007bff'}}>
+                                                                    <FaCheckDouble size={10}/> 
+                                                                </span>
+                                                            ) : (
+                                                                <span title="Đã gửi" style={{color: '#ccc'}}>
+                                                                    <FaCheck size={10}/>
+                                                                </span>
+                                                            )}
+                                                        </span>
+                                                    )}
+                                                </div>
+                                            </div>
                                         </div>
                                     ))}
                                     <div ref={messagesEndRef} />
@@ -791,7 +843,33 @@ const styles: { [key: string]: React.CSSProperties } = {
     chatInputArea: { padding: '15px', display: 'flex', alignItems: 'center', gap: '12px', borderTop: '1px solid #f0f0f0' },
     messengerInput: { flex: 1, backgroundColor: '#f0f2f5', border: 'none', borderRadius: '20px', padding: '10px 16px', fontSize: '14px', outline: 'none' },
     emptyChatState: { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#999', textAlign: 'center' },
-
+    messageRow: {
+        display: 'flex',
+        marginBottom: '4px',
+        width: '100%'
+    },
+    bubbleMe: {
+        padding: '10px 16px',
+        borderRadius: '18px 18px 4px 18px',
+        backgroundColor: '#007bff',
+        color: 'white',
+        maxWidth: '70%',
+        fontSize: '14.5px',
+        lineHeight: '1.5',
+        boxShadow: '0 1px 2px rgba(0,0,0,0.1)',
+        wordWrap: 'break-word' as 'break-word'
+    },
+    bubbleOther: {
+        padding: '10px 16px',
+        borderRadius: '18px 18px 18px 4px',
+        backgroundColor: '#e4e6eb',
+        color: '#050505',
+        maxWidth: '70%',
+        fontSize: '14.5px',
+        lineHeight: '1.5',
+        boxShadow: '0 1px 2px rgba(0,0,0,0.1)',
+        wordWrap: 'break-word' as 'break-word'
+    },
     // FAB
     fabContainer: { position: 'fixed', bottom: '30px', right: '30px', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', zIndex: 2000 },
     fabButton: { width: '56px', height: '56px', borderRadius: '50%', backgroundColor: '#007bff', color: 'white', fontSize: '24px', border: 'none', boxShadow: '0 4px 10px rgba(0,123,255,0.4)', cursor: 'pointer', display:'flex', alignItems:'center', justifyContent:'center' },

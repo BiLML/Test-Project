@@ -40,3 +40,4 @@ tf2onnx==1.16.1
 alembic 
 sqlalchemy 
 psycopg2-binary
+motor

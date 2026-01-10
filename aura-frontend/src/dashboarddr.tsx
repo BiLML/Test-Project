@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { 
     FaPaperPlane, FaUserMd, FaUsers, FaClipboardList, FaCommentDots, 
     FaSearch, FaTimes, FaSignOutAlt, FaBell, FaChartBar, FaStethoscope,
-    FaFileAlt, FaEdit, FaCheckCircle, FaExclamationTriangle 
+    FaFileAlt, FaEdit, FaCheckCircle, FaExclamationTriangle, FaCheck, FaCheckDouble 
 } from 'react-icons/fa';
 
 // --- Dashboard Component (Bác sĩ) ---
@@ -207,7 +207,17 @@ const DashboardDr: React.FC = () => {
         if (!newMessageText.trim() || !selectedChatId) return;
         const textToSend = newMessageText;
         setNewMessageText(''); 
-        const tempMsg = { id: Date.now().toString(), content: textToSend, is_me: true, time: new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) };
+        const now = new Date();
+        // Lấy giờ phút và tự thêm số 0 đằng trước nếu < 10
+        const timeString = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+
+        const tempMsg = {
+            id: Date.now().toString(),
+            content: textToSend,
+            is_me: true,
+            time: timeString, // <--- Dùng biến này thay vì toLocaleTimeString
+            is_read: false
+        };
         setCurrentMessages(prev => [...prev, tempMsg]);
         setChatData(prevList => {
             const newList = [...prevList];
@@ -568,7 +578,6 @@ const DashboardDr: React.FC = () => {
                     {/* --- TAB CHAT --- */}
                     {activeTab === 'chat' && (
                         <div style={styles.messengerCard}>
-                            {/* ... (Giữ nguyên giao diện chat) ... */}
                             <div style={styles.chatListPanel}>
                                 <div style={styles.chatHeaderLeft}>
                                     <h3 style={{margin:0, fontSize:'16px'}}>Tư vấn Trực tuyến</h3>
@@ -592,14 +601,63 @@ const DashboardDr: React.FC = () => {
                                         <div style={styles.chatWindowHeader}>
                                             <h4 style={{margin:0}}>{chatData.find(c=>c.id===selectedChatId)?.display_name}</h4>
                                         </div>
+                                        
+                                        {/* --- PHẦN HIỂN THỊ TIN NHẮN --- */}
                                         <div style={styles.messagesBody}>
-                                            {currentMessages.map((m,i) => (
-                                                <div key={i} style={{display:'flex', justifyContent:m.is_me?'flex-end':'flex-start', marginBottom:'10px'}}>
-                                                    <div style={{padding:'8px 12px', borderRadius:'15px', background:m.is_me?'#3498db':'#f1f0f0', color:m.is_me?'white':'#333', maxWidth:'70%'}}>{m.content}</div>
+                                            {currentMessages.map((m, i) => (
+                                                <div key={i} style={{
+                                                    ...styles.messageRow, 
+                                                    justifyContent: m.is_me ? 'flex-end' : 'flex-start'
+                                                }}>
+                                                    {/* Avatar người đối diện */}
+                                                    {!m.is_me && (
+                                                        <div style={{
+                                                            width:'28px', height:'28px', borderRadius:'50%', 
+                                                            background:'#ddd', marginRight:'8px', display:'flex', 
+                                                            alignItems:'center', justifyContent:'center', fontSize:'10px',
+                                                            alignSelf: 'flex-end', marginBottom: '20px'
+                                                        }}>
+                                                            {(chatData.find(c=>c.id===selectedChatId)?.display_name || '').charAt(0)}
+                                                        </div>
+                                                    )}
+                                                    
+                                                    <div style={{display:'flex', flexDirection:'column', alignItems: m.is_me ? 'flex-end' : 'flex-start', maxWidth:'70%'}}>
+                                                        {/* Bong bóng chat */}
+                                                        <div style={m.is_me ? styles.bubbleMe : styles.bubbleOther}>
+                                                            {m.content}
+                                                        </div>
+
+                                                        {/* Dòng hiển thị Thời gian & Trạng thái */}
+                                                        <div style={{
+                                                            display:'flex', alignItems:'center', gap:'4px', 
+                                                            marginTop:'2px', marginBottom:'10px', 
+                                                            fontSize:'11px', color:'#999',
+                                                            paddingRight: m.is_me ? '5px' : '0',
+                                                            paddingLeft: !m.is_me ? '5px' : '0'
+                                                        }}>
+                                                            <span>{m.time}</span>
+                                                            {m.is_me && (
+                                                                <span style={{marginLeft:'2px', display:'flex', alignItems:'center'}}>
+                                                                    {m.is_read ? (
+                                                                        <span title="Đã xem" style={{display:'flex', alignItems:'center', color: '#007bff'}}>
+                                                                            <FaCheckDouble size={10}/> 
+                                                                            <span style={{fontSize:'10px', marginLeft:'2px'}}>Đã xem</span>
+                                                                        </span>
+                                                                    ) : (
+                                                                        <span title="Đã gửi" style={{color: '#ccc'}}>
+                                                                            <FaCheck size={10}/>
+                                                                        </span>
+                                                                    )}
+                                                                </span>
+                                                            )}
+                                                        </div>
+                                                    </div>
                                                 </div>
                                             ))}
                                             <div ref={messagesEndRef}/>
                                         </div>
+                                        {/* ----------------------------------------------------- */}
+
                                         <form onSubmit={handleSendMessage} style={styles.chatInputArea}>
                                             <input style={styles.messengerInput} value={newMessageText} onChange={e=>setNewMessageText(e.target.value)} placeholder="Nhập tin nhắn..."/>
                                             <button type="submit" style={{border:'none', background:'none', cursor:'pointer'}}><FaPaperPlane color="#3498db" size={20}/></button>
@@ -873,8 +931,8 @@ const styles: {[key:string]: React.CSSProperties} = {
     selectInput: { padding: '5px', borderRadius: '6px', border: '1px solid #ddd', fontSize: '13px' },
 
     // Messenger & Modal
-    messengerCard: { display: 'flex', height: 'calc(100vh - 140px)', backgroundColor: 'white', borderRadius: '12px', boxShadow: '0 2px 10px rgba(0,0,0,0.03)', border:'1px solid #eaeaea', overflow: 'hidden' },
-    chatListPanel: { width: '300px', borderRight: '1px solid #f0f0f0', display: 'flex', flexDirection: 'column' },
+    messengerCard: { display: 'flex', height: 'calc(100vh - 140px)', backgroundColor: 'white', borderRadius: '12px', boxShadow: '0 2px 10px rgba(0,0,0,0.05)', border:'1px solid #e1e4e8', overflow: 'hidden' },
+    chatListPanel: { width: '300px', borderRight: '1px solid #e1e4e8', display: 'flex', flexDirection: 'column', backgroundColor: '#fafafa' },
     chatHeaderLeft: { padding: '15px', borderBottom: '1px solid #f0f0f0', background:'#f9f9f9' },
     chatListScroll: { flex: 1, overflowY: 'auto' },
     chatListItem: { display: 'flex', alignItems: 'center', padding: '12px', cursor: 'pointer', gap: '10px', borderBottom:'1px solid #fcfcfc' },
@@ -886,6 +944,40 @@ const styles: {[key:string]: React.CSSProperties} = {
     chatInputArea: { padding: '15px 20px', borderTop: '1px solid #f0f0f0', display:'flex', gap:'10px', alignItems: 'center', flexShrink: 0},
     messengerInput: { flex:1, padding:'10px', borderRadius:'20px', border:'1px solid #ddd', outline:'none' },
     emptyChatState: { flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', color:'#999' },
+    messageRow: {
+        display: 'flex',
+        marginBottom: '4px',
+        width: '100%'
+    },
+    bubbleMe: {
+        padding: '10px 16px',
+        borderRadius: '18px 18px 4px 18px',
+        backgroundColor: '#3498db', // Màu xanh
+        color: 'white',
+        maxWidth: '65%',
+        fontSize: '14.5px',
+        lineHeight: '1.5',
+        boxShadow: '0 1px 2px rgba(0,0,0,0.1)',
+        wordWrap: 'break-word' as 'break-word'
+    },
+    bubbleOther: {
+        padding: '10px 16px',
+        borderRadius: '18px 18px 18px 4px',
+        backgroundColor: '#f1f0f0', // Màu xám
+        color: '#1c1e21',
+        maxWidth: '65%',
+        fontSize: '14.5px',
+        lineHeight: '1.5',
+        boxShadow: '0 1px 2px rgba(0,0,0,0.1)',
+        wordWrap: 'break-word' as 'break-word'
+    },
+    timestamp: {
+        fontSize: '10px',
+        color: '#999',
+        marginTop: '4px',
+        marginLeft: '5px',
+        marginRight: '5px'
+    },
     
     // Dropdowns & Modals
     notificationDropdown: { position: 'absolute', top: '40px', right: '-10px', width: '300px', backgroundColor: 'white', borderRadius: '8px', boxShadow: '0 4px 15px rgba(0,0,0,0.15)', zIndex: 1100, border:'1px solid #eee' },

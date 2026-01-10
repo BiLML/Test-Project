@@ -60,3 +60,16 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         raise credentials_exception
         
     return user
+
+def get_current_active_user(
+    current_user: User = Depends(get_current_user),
+) -> User:
+    """
+    Hàm phụ trợ để lấy user hiện tại và đảm bảo user đó đang active.
+    Hiện tại logic chỉ cần trả về current_user là đủ để Chat hoạt động.
+    """
+    # Nếu muốn chặn user bị khóa, bạn có thể thêm logic check status ở đây:
+    # if current_user.status == "suspended":
+    #     raise HTTPException(status_code=400, detail="Inactive user")
+    
+    return current_user

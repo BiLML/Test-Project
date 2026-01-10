@@ -4,7 +4,7 @@ from fastapi.staticfiles import StaticFiles
 import os
 
 # Import các router
-from api import auth, users, medical_records, clinic, billing, admin
+from api import auth, users, medical_records, clinic, billing, admin, chat, doctor
 
 app = FastAPI(title="Aura AI Backend")
 
@@ -41,6 +41,16 @@ app.include_router(billing.router, prefix="/api/v1/billing", tags=["Billing"])
 
 # 6. Admin: Quản lý người dùng, Báo cáo
 app.include_router(admin.router, prefix="/api/v1/admin", tags=["Admin Dashboard"])
+
+# Đăng ký cho các API gửi/nhận tin (/api/v1/chat/send...)
+app.include_router(chat.router, prefix="/api/v1/chat", tags=["Chat Actions"])
+
+# Đăng ký cho API lấy danh sách (/api/v1/chats)
+app.include_router(chat.router, prefix="/api/v1/chats", tags=["Chat List"])
+
+# Đăng ký router
+app.include_router(doctor.router, prefix="/api/v1/doctor", tags=["Doctor"])
+
 # --------------------------------------
 @app.get("/")
 def root():

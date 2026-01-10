@@ -17,7 +17,8 @@ class User(Base):
     status = Column(Enum(UserStatus, values_callable=lambda x: [e.value for e in x]), default=UserStatus.PENDING)
     created_at = Column(DateTime, default=datetime.utcnow)
     clinic_id = Column(UUID(as_uuid=True), ForeignKey("clinics.id"), nullable=True)
-
+    sent_messages = relationship("Message", foreign_keys="[Message.sender_id]", back_populates="sender", cascade="all, delete-orphan")
+    received_messages = relationship("Message", foreign_keys="[Message.receiver_id]", back_populates="receiver", cascade="all, delete-orphan")
     assigned_doctor_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     # Relationships
     profile = relationship("Profile", back_populates="user", uselist=False, cascade="all, delete-orphan")
